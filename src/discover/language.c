@@ -249,6 +249,28 @@ static const ext_entry_t EXT_TABLE[] = {
     {".rake", CBM_LANG_RUBY},
     {".rb", CBM_LANG_RUBY},
 
+    /* RPG (IBM i). Source members are exported to git with the extension in
+     * either case (CUSTMNT.RPGLE, custmnt.rpgle), and this table is matched
+     * case-sensitively, so both spellings are listed. .rpgle/.sqlrpgle/
+     * .rpgleinc are RPG IV; .rpg/.rpg36/.rpg38/.sqlrpg/.sqlrpg38 are RPG II/III,
+     * whose calculation specification has different columns (extract_rpg.c). */
+    {".rpg", CBM_LANG_RPG},
+    {".RPG", CBM_LANG_RPG},
+    {".rpg36", CBM_LANG_RPG},
+    {".RPG36", CBM_LANG_RPG},
+    {".rpg38", CBM_LANG_RPG},
+    {".RPG38", CBM_LANG_RPG},
+    {".rpgle", CBM_LANG_RPG},
+    {".RPGLE", CBM_LANG_RPG},
+    {".rpgleinc", CBM_LANG_RPG},
+    {".RPGLEINC", CBM_LANG_RPG},
+    {".sqlrpg", CBM_LANG_RPG},
+    {".SQLRPG", CBM_LANG_RPG},
+    {".sqlrpg38", CBM_LANG_RPG},
+    {".SQLRPG38", CBM_LANG_RPG},
+    {".sqlrpgle", CBM_LANG_RPG},
+    {".SQLRPGLE", CBM_LANG_RPG},
+
     /* Rust */
     {".rs", CBM_LANG_RUST},
 
@@ -891,6 +913,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_OBJECTSCRIPT_EXPORT] = "ObjectScript Export XML",
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
+    [CBM_LANG_RPG] = "RPG",
 
 };
 
