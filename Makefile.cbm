@@ -420,6 +420,7 @@ EXTRACTION_SRCS = \
     $(CBM_DIR)/extract_nextjs.c \
     $(CBM_DIR)/sql_values.c \
     $(CBM_DIR)/php_inline_html.c \
+    $(CBM_DIR)/extract_rpg.c \
     $(CBM_DIR)/helpers.c \
     $(CBM_DIR)/cpp_branch_views.c \
     $(CBM_DIR)/result_compact.c \
@@ -794,6 +795,7 @@ TEST_EXTRACTION_SRCS = \
     tests/test_test_conventions.c \
     tests/test_extraction_inheritance.c \
     tests/test_extraction_imports.c \
+    tests/test_extraction_rpg.c \
     tests/test_parse_coverage.c \
     tests/test_grammar_regression.c \
     tests/test_grammar_labels.c \

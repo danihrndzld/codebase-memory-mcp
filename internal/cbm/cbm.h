@@ -215,6 +215,7 @@ typedef enum {
                        // operations are Routes (openapi.c)
     CBM_LANG_DIAGRAM,  // diagram files (PlantUML, DOT, D2, draw.io, Excalidraw), read
                        // without a grammar (diagram.c)
+    CBM_LANG_RPG,      // IBM i RPG (RPG II/III/IV, fixed and free-form). No grammar: extract_rpg.c
     CBM_LANG_COUNT
 } CBMLanguage;
 
@@ -1480,6 +1481,11 @@ void cbm_extract_unified(CBMExtractCtx *ctx);
 
 // K8s / Kustomize semantic extractor (called when language is CBM_LANG_K8S or CBM_LANG_KUSTOMIZE).
 void cbm_extract_k8s(CBMExtractCtx *ctx);
+
+// IBM i RPG line scanner (CBM_LANG_RPG). Runs instead of the tree-sitter
+// passes: ctx->root is unused and the result retains no tree. Defined in
+// extract_rpg.c.
+void cbm_extract_rpg(CBMExtractCtx *ctx);
 
 // --- Label predicates ---
 
