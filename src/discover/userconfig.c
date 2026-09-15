@@ -164,6 +164,8 @@ static const lang_name_entry_t LANG_NAME_TABLE[] = {
     {"asciidoc", CBM_LANG_ASCIIDOC},
     {"diagram", CBM_LANG_DIAGRAM},
     {"openapi", CBM_LANG_OPENAPI},
+    {"rpg", CBM_LANG_RPG},
+    {"rpgle", CBM_LANG_RPG},
     {"lean", CBM_LANG_LEAN},
     {"form", CBM_LANG_FORM},
     {"magma", CBM_LANG_MAGMA},

@@ -19,6 +19,7 @@ typedef enum {
     CAP_TRANSFORM_ONLY,
     CAP_UNSUPPORTED,
     CAP_DOCUMENT,
+    CAP_LINE_SCANNER,
     CAP_COUNT
 } LanguageCapability;
 
@@ -47,6 +48,9 @@ size_t repro_call_argument_matrix_b_copy_language_ids(CBMLanguage *language_ids,
 #define DOCUMENT(lang)                        \
     [CBM_LANG_##lang] = {CAP_DOCUMENT, #lang, \
                          "a document format read without a grammar; no code, no calls"}
+#define LINE_SCANNER(lang)                        \
+    [CBM_LANG_##lang] = {CAP_LINE_SCANNER, #lang, \
+                         "hand-written line scanner; no grammar and no call-node metadata"}
 
 /* Explicit ledger: no default initializer is intentional. A new enum remains
  * CAP_UNSET until its call-metadata/reference-vocabulary behavior is audited. */
@@ -221,6 +225,7 @@ static const LanguageCapabilityEntry LANGUAGE_CAPABILITIES[CBM_LANG_COUNT] = {
     DOCUMENT(ASCIIDOC),
     NO_CALL(OPENAPI), /* the JSON grammar; its operations are Routes, no calls */
     DOCUMENT(DIAGRAM),
+    LINE_SCANNER(RPG),
 };
 
 #undef CALL_WITH_REFERENCE_VOCAB
@@ -229,6 +234,7 @@ static const LanguageCapabilityEntry LANGUAGE_CAPABILITIES[CBM_LANG_COUNT] = {
 #undef TRANSFORM_ONLY
 #undef UNSUPPORTED
 #undef DOCUMENT
+#undef LINE_SCANNER
 
 _Static_assert(sizeof(LANGUAGE_CAPABILITIES) / sizeof(LANGUAGE_CAPABILITIES[0]) == CBM_LANG_COUNT,
                "language capability ledger must track CBM_LANG_COUNT");
@@ -281,7 +287,7 @@ TEST(repro_language_capability_ledger_covers_every_enum) {
         counts[entry->capability]++;
 
         if (entry->capability == CAP_UNSUPPORTED || entry->capability == CAP_TRANSFORM_ONLY ||
-            entry->capability == CAP_DOCUMENT) {
+            entry->capability == CAP_DOCUMENT || entry->capability == CAP_LINE_SCANNER) {
             if (spec) {
                 fprintf(stderr,
                         "  [language-registry] lang=%s "
@@ -314,13 +320,13 @@ TEST(repro_language_capability_ledger_covers_every_enum) {
     if (counts[CAP_CALL_WITH_REFERENCE_VOCAB] != 88 ||
         counts[CAP_CALL_WITHOUT_REFERENCE_VOCAB] != 27 || counts[CAP_NO_CALL] != 50 ||
         counts[CAP_TRANSFORM_ONLY] != 1 || counts[CAP_UNSUPPORTED] != 1 ||
-        counts[CAP_DOCUMENT] != 3) {
+        counts[CAP_DOCUMENT] != 3 || counts[CAP_LINE_SCANNER] != 1) {
         fprintf(stderr,
                 "  [language-registry] invariant=capability_partition call_ref_vocab=%d ref_gap=%d "
-                "no_call=%d transform_only=%d unsupported=%d document=%d\n",
+                "no_call=%d transform_only=%d unsupported=%d document=%d line_scanner=%d\n",
                 counts[CAP_CALL_WITH_REFERENCE_VOCAB], counts[CAP_CALL_WITHOUT_REFERENCE_VOCAB],
                 counts[CAP_NO_CALL], counts[CAP_TRANSFORM_ONLY], counts[CAP_UNSUPPORTED],
-                counts[CAP_DOCUMENT]);
+                counts[CAP_DOCUMENT], counts[CAP_LINE_SCANNER]);
         failures++;
     }
 
@@ -334,7 +340,7 @@ TEST(repro_call_argument_matrices_equal_call_capability_ledger) {
         EXPECTED_MATRIX_B_ROWS = 49,
         EXPECTED_CALL_CAPABLE_LANGUAGES = 115,
         EXPECTED_NON_CALL_LANGUAGES =
-            55, /* 50 no-call + transform-only + unsupported + PDF, AsciiDoc, Diagram */
+            56, /* 50 no-call + transform-only + unsupported + PDF, AsciiDoc, Diagram + RPG */
         EXPECTED_NON_CALL_DOMAIN_CONTROLS = 2,
     };
     CBMLanguage matrix_a_ids[CBM_LANG_COUNT];
@@ -445,11 +451,12 @@ TEST(repro_call_argument_matrices_equal_call_capability_ledger) {
         }
 
         if (entry->capability != CAP_NO_CALL && entry->capability != CAP_TRANSFORM_ONLY &&
-            entry->capability != CAP_UNSUPPORTED && entry->capability != CAP_DOCUMENT) {
+            entry->capability != CAP_UNSUPPORTED && entry->capability != CAP_DOCUMENT &&
+            entry->capability != CAP_LINE_SCANNER) {
             fprintf(stderr,
                     "  [language-registry] lang=%s id=%d "
                     "invariant=remaining_capability_explicit "
-                    "expected=NO_CALL_or_TRANSFORM_ONLY_or_UNSUPPORTED_or_DOCUMENT "
+                    "expected=NO_CALL_or_TRANSFORM_ONLY_or_UNSUPPORTED_or_DOCUMENT_or_LINE_SCANNER "
                     "actual=%d\n",
                     language_name, language_id, (int)entry->capability);
             failures++;
