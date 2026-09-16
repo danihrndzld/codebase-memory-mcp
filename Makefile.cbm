@@ -275,6 +275,7 @@ EXTRACTION_SRCS = \
     $(CBM_DIR)/extract_channels.c \
     $(CBM_DIR)/extract_k8s.c \
     $(CBM_DIR)/extract_dbt.c \
+    $(CBM_DIR)/extract_rpg.c \
     $(CBM_DIR)/helpers.c \
     $(CBM_DIR)/result_compact.c \
     $(CBM_DIR)/result_spill.c \
@@ -549,6 +550,7 @@ TEST_EXTRACTION_SRCS = \
     tests/test_extraction.c \
     tests/test_extraction_inheritance.c \
     tests/test_extraction_imports.c \
+    tests/test_extraction_rpg.c \
     tests/test_parse_coverage.c \
     tests/test_grammar_regression.c \
     tests/test_grammar_labels.c \

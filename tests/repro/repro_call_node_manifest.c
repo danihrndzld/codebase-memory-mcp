@@ -547,9 +547,11 @@ TEST(repro_call_node_manifest_live_specs_contain_only_expected_primary_entries) 
         CBMLanguage language = (CBMLanguage)value;
         const CBMLangSpec *spec = cbm_lang_spec(language);
 
-        /* The registry reproduction owns Nim's stale enum and Studio Export's
-         * transform-only, intentionally grammar-free classification. */
-        if (language == CBM_LANG_NIM || language == CBM_LANG_OBJECTSCRIPT_EXPORT) {
+        /* The registry reproduction owns Nim's stale enum, Studio Export's
+         * transform-only classification and RPG's line scanner: all three are
+         * intentionally grammar-free. */
+        if (language == CBM_LANG_NIM || language == CBM_LANG_OBJECTSCRIPT_EXPORT ||
+            language == CBM_LANG_RPG) {
             continue;
         }
         if (!spec || spec->language != language) {
