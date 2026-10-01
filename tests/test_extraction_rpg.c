@@ -92,6 +92,18 @@ static int str_eq(const char *a, const char *b) {
     return a && b && strcmp(a, b) == 0;
 }
 
+/* A READS (is_write 0) or WRITES (1) of `name` from exactly this enclosing QN. */
+static int has_rw(const CBMFileResult *r, const char *name, const char *enclosing, int is_write) {
+    for (int i = 0; i < r->rw.count; i++) {
+        const CBMReadWrite *rw = &r->rw.items[i];
+        if (str_eq(rw->var_name, name) && str_eq(rw->enclosing_func_qn, enclosing) &&
+            rw->is_write == is_write) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ── Fixed-form source builder ─────────────────────────────────── */
 
 typedef struct {
@@ -346,14 +358,14 @@ TEST(rpg_free_calls) {
     ASSERT_TRUE(has_call(r, "CUSTMNT.init", FREE_PROGRAM_QN, 37));
     ASSERT_TRUE(has_call(r, "calcTotal.accumulate", FREE_PROC_QN, 66));
     /* Prototyped calls resolve to the external program or procedure. */
-    ASSERT_TRUE(has_call(r, "GETCUST", FREE_PROGRAM_QN, 38));
+    ASSERT_TRUE(has_call(r, "GETCUST.GETCUST", FREE_PROGRAM_QN, 38));
     ASSERT_TRUE(has_call(r, "log_message", FREE_PROGRAM_QN, 39));
-    ASSERT_TRUE(has_call(r, "FILEUTIL", FREE_PROGRAM_QN, 40));
+    ASSERT_TRUE(has_call(r, "FILEUTIL.FILEUTIL", FREE_PROGRAM_QN, 40));
     ASSERT_TRUE(has_call(r, "formatName", FREE_PROC_QN, 67));
     /* A call inside an expression, on the line the statement started. */
     ASSERT_TRUE(has_call(r, "calcTotal", FREE_PROGRAM_QN, 41));
     /* exec sql call names an IBM i object. */
-    ASSERT_TRUE(has_call(r, "PROC_AUDIT", FREE_PROGRAM_QN, 43));
+    ASSERT_TRUE(has_call(r, "PROC_AUDIT.PROC_AUDIT", FREE_PROGRAM_QN, 43));
 
     /* Array subscripts, built-in functions and opcodes are not calls. */
     ASSERT_FALSE(has_callee(r, "names"));
@@ -511,8 +523,8 @@ TEST(rpg_fixed_iv_calls_and_metrics) {
     ASSERT_NOT_NULL(r);
 
     ASSERT_TRUE(has_call(r, "CUSTRPT.INIT", FIXED_PROGRAM_QN, 19));
-    ASSERT_TRUE(has_call(r, "GETCUST", FIXED_PROGRAM_QN, 20));
-    ASSERT_TRUE(has_call(r, "ORDPGM", FIXED_PROGRAM_QN, 21));
+    ASSERT_TRUE(has_call(r, "GETCUST.GETCUST", FIXED_PROGRAM_QN, 20));
+    ASSERT_TRUE(has_call(r, "ORDPGM.ORDPGM", FIXED_PROGRAM_QN, 21));
     ASSERT_TRUE(has_call(r, "do_work", FIXED_PROGRAM_QN, 22));
     /* The call sits on the continuation line of an EVAL; the site is the
      * opcode line. */
@@ -556,7 +568,7 @@ TEST(rpg_mixed_fixed_and_free) {
     ASSERT_NOT_NULL(pgm);
     ASSERT_EQ(pgm->start_line, 5);
     ASSERT_EQ(pgm->end_line, 9);
-    ASSERT_TRUE(has_call(r, "GETCUST", "t.qrpglesrc.mixed.MIXED", 5));
+    ASSERT_TRUE(has_call(r, "GETCUST.GETCUST", "t.qrpglesrc.mixed.MIXED", 5));
     ASSERT_TRUE(has_call(r, "MIXED.done", "t.qrpglesrc.mixed.MIXED", 6));
     ASSERT_EQ(r->calls.count, 2);
     cbm_free_result(r);
@@ -593,7 +605,7 @@ TEST(rpg3_program) {
     ASSERT_NOT_NULL(find_def(r, "Function", "ERRSR"));
     ASSERT_TRUE(has_import(r, "ORDCPY", "QRPGSRC/ORDCPY"));
     ASSERT_TRUE(has_call(r, "ORDENT.INIT", pgm_qn, 4));
-    ASSERT_TRUE(has_call(r, "ORDUPD", pgm_qn, 5));
+    ASSERT_TRUE(has_call(r, "ORDUPD.ORDUPD", pgm_qn, 5));
     ASSERT_TRUE(has_call(r, "ORDENT.ERRSR", pgm_qn, 7));
     /* CALL through a variable has no static target. */
     ASSERT_FALSE(has_callee(r, "PGMVAR"));
@@ -732,6 +744,193 @@ TEST(rpg_fixed_short_lines) {
     PASS();
 }
 
+/* ── Files, CL and DDS ─────────────────────────────────────────── */
+
+/* dcl-f and F-specs become READS / WRITES from the program def: input reads,
+ * output writes, update and workstation files both. *UPDATE and *DELETE imply
+ * *INPUT, as the compiler treats them. */
+TEST(rpg_file_uses) {
+    static const char src[] = "**FREE\n"
+                              "dcl-f CUSTMST usage(*update);\n"
+                              "dcl-f CUSTLOG usage(*output);\n"
+                              "dcl-f CUSTDSP workstn;\n"
+                              "dcl-f QPRINT printer;\n"
+                              "dcl-f ORDHDR;\n"
+                              "*inlr = *on;\n";
+    CBMFileResult *r = extract_rpg(src, "qrpglesrc/custfil.rpgle");
+    ASSERT_NOT_NULL(r);
+    const char *pgm = "t.qrpglesrc.custfil.CUSTFIL";
+    ASSERT_TRUE(has_rw(r, "CUSTMST", pgm, 0));
+    ASSERT_TRUE(has_rw(r, "CUSTMST", pgm, 1));
+    ASSERT_FALSE(has_rw(r, "CUSTLOG", pgm, 0));
+    ASSERT_TRUE(has_rw(r, "CUSTLOG", pgm, 1));
+    ASSERT_TRUE(has_rw(r, "CUSTDSP", pgm, 0));
+    ASSERT_TRUE(has_rw(r, "CUSTDSP", pgm, 1));
+    ASSERT_FALSE(has_rw(r, "QPRINT", pgm, 0));
+    ASSERT_TRUE(has_rw(r, "QPRINT", pgm, 1));
+    ASSERT_TRUE(has_rw(r, "ORDHDR", pgm, 0));
+    ASSERT_FALSE(has_rw(r, "ORDHDR", pgm, 1));
+    ASSERT_EQ(r->rw.count, 7);
+    cbm_free_result(r);
+
+    /* Fixed form: RPG IV names the file in 7-16 with the type in 17, RPG III
+     * in 7-14 with the type in 15. A blank-name continuation is no file. */
+    Src s4 = {{0}, 0};
+    put(&s4, "     FCUSTMST   UF   E           K DISK");
+    put(&s4, "     FQPRINT    O    F  132        PRINTER");
+    put(&s4, "     F                                     RENAME(CUSTR:CUSTR2)");
+    c_spec(&s4, "", "RETURN", "", "");
+    r = extract_rpg(s4.buf, "qrpglesrc/fixfil.rpgle");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(has_rw(r, "CUSTMST", "t.qrpglesrc.fixfil.FIXFIL", 0));
+    ASSERT_TRUE(has_rw(r, "CUSTMST", "t.qrpglesrc.fixfil.FIXFIL", 1));
+    ASSERT_TRUE(has_rw(r, "QPRINT", "t.qrpglesrc.fixfil.FIXFIL", 1));
+    ASSERT_EQ(r->rw.count, 3);
+    cbm_free_result(r);
+
+    Src s3 = {{0}, 0};
+    put(&s3, "     FORDHDR  IF  E           K        DISK");
+    c3_spec(&s3, "", "SETON", "", "");
+    r = extract_rpg(s3.buf, "qrpgsrc/ordrd.rpg");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(has_rw(r, "ORDHDR", "t.qrpgsrc.ordrd.ORDRD", 0));
+    ASSERT_EQ(r->rw.count, 1);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A CL member is one entry-point program named after the member. CALL and
+ * SBMJOB CMD(CALL ...) target PGM.PGM, CALLPRC a bare procedure; file
+ * commands become READS / WRITES. Variables, special values, comments and
+ * labels are handled; a `+` continuation joins the next line. */
+TEST(cl_program_calls_and_files) {
+    static const char src[] = "/* Nightly customer update */\n"         /* 1 */
+                              "             PGM\n"                      /* 2 */
+                              "             DCLF       FILE(CUSTDSP)\n" /* 3 */
+                              "             OVRDBF     FILE(INPUT) TOFILE(MYLIB/CUSTMST)\n"
+                              "             CALL       PGM(CUSTRPG)\n" /* 5 */
+                              "             SBMJOB     CMD(CALL PGM(CUSTRPT)) JOB(RPT)\n"
+                              "             CALLPRC    PRC(audit_log)\n" /* 7 */
+                              "             CPYF       FROMFILE(CUSTMST) TOFILE(CUSTBAK) +\n"
+                              "                          MBROPT(*REPLACE)\n" /* 9 */
+                              "             CLRPFM     FILE(WRKFILE)\n"      /* 10 */
+                              "             CALL       PGM(&VARPGM)\n"       /* 11 */
+                              " LOOP:       CALL       CUSTEND\n"            /* 12 */
+                              "             /* CALL PGM(NOTCODE) */\n"       /* 13 */
+                              "             ENDPGM\n";                       /* 14 */
+    CBMFileResult *r = cbm_extract_file(src, (int)strlen(src), CBM_LANG_RPG, "t",
+                                        "qclsrc/custupd.clle", 0, NULL, NULL);
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    const char *pgm_qn = "t.qclsrc.custupd.CUSTUPD";
+    const CBMDefinition *pgm = find_def(r, "Function", "CUSTUPD");
+    ASSERT_NOT_NULL(pgm);
+    ASSERT_STR_EQ(pgm->qualified_name, pgm_qn);
+    ASSERT_TRUE(pgm->is_entry_point);
+    ASSERT_STR_EQ(pgm->return_type, "CL");
+    ASSERT_STR_EQ(pgm->docstring, "Nightly customer update");
+    ASSERT_EQ(count_label(r, "Module"), 1);
+
+    ASSERT_TRUE(has_call(r, "CUSTRPG.CUSTRPG", pgm_qn, 5));
+    ASSERT_TRUE(has_call(r, "CUSTRPT.CUSTRPT", pgm_qn, 6));
+    ASSERT_TRUE(has_call(r, "AUDIT_LOG", pgm_qn, 7));
+    ASSERT_TRUE(has_call(r, "CUSTEND.CUSTEND", pgm_qn, 12));
+    ASSERT_FALSE(has_callee(r, "NOTCODE.NOTCODE"));
+    ASSERT_EQ(r->calls.count, 4);
+
+    ASSERT_TRUE(has_rw(r, "CUSTDSP", pgm_qn, 0));
+    ASSERT_TRUE(has_rw(r, "CUSTMST", pgm_qn, 0));
+    ASSERT_TRUE(has_rw(r, "CUSTBAK", pgm_qn, 1));
+    ASSERT_TRUE(has_rw(r, "WRKFILE", pgm_qn, 1));
+    ASSERT_FALSE(has_rw(r, "INPUT", pgm_qn, 0));
+    ASSERT_FALSE(has_rw(r, "CUSTMST", pgm_qn, 1));
+    cbm_free_result(r);
+
+    /* A menu command member is a program too, typed as a menu. */
+    static const char menu[] = "CALL PGM(ORDENT)\n";
+    r = cbm_extract_file(menu, (int)strlen(menu), CBM_LANG_RPG, "t", "qmnusrc/mainmnu.mnucmd", 0,
+                         NULL, NULL);
+    ASSERT_NOT_NULL(r);
+    ASSERT_NOT_NULL(find_def(r, "Function", "MAINMNU"));
+    ASSERT_STR_EQ(find_def(r, "Function", "MAINMNU")->return_type, "menu");
+    ASSERT_TRUE(has_call(r, "ORDENT.ORDENT", "t.qmnusrc.mainmnu.MAINMNU", 1));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* DDS A-spec: name type 17, name 19-28, reference 29, length 30-34, data
+ * type 35, decimals 36-37, usage 38, keywords from 45. */
+static void dds_spec(Src *s, const char *ntype, const char *name, const char *ref, const char *len,
+                     const char *type, const char *dec, const char *keywords) {
+    char line[160];
+    snprintf(line, sizeof(line), "     A          %1s %-10s%1s%5s%1s%2s       %s", ntype, name, ref,
+             len, type, dec, keywords);
+    put(s, line);
+}
+
+/* A physical file: the file and each record format are Structs, each field a
+ * Field with its DDS type; keys, TEXT and COLHDG land in docstrings and REF /
+ * REFFLD targets become imports. */
+TEST(dds_physical_file) {
+    Src s = {{0}, 0};
+    put(&s, "     A*  Customer master");                                        /* 1 */
+    dds_spec(&s, "", "", "", "", "", "", "REF(FLDREF)");                        /* 2 */
+    dds_spec(&s, "R", "CUSTREC", "", "", "", "", "TEXT('Customer record')");    /* 3 */
+    dds_spec(&s, "", "CUSTNO", "", "7", "S", " 0", "TEXT('Customer number')");  /* 4 */
+    dds_spec(&s, "", "CUSTNM", "", "60", "A", "", "COLHDG('Customer' 'name')"); /* 5 */
+    dds_spec(&s, "", "BAL", "", "13", "P", " 2", "");                           /* 6 */
+    dds_spec(&s, "", "REGION", "R", "", "", "", "REFFLD(REGION FLDREF)");       /* 7 */
+    dds_spec(&s, "K", "CUSTNO", "", "", "", "", "");                            /* 8 */
+    CBMFileResult *r =
+        cbm_extract_file(s.buf, (int)s.len, CBM_LANG_RPG, "t", "qddssrc/custmst.pf", 0, NULL, NULL);
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+
+    const CBMDefinition *file = find_def(r, "Struct", "CUSTMST");
+    ASSERT_NOT_NULL(file);
+    ASSERT_STR_EQ(file->qualified_name, "t.qddssrc.custmst.CUSTMST");
+    ASSERT_STR_EQ(file->return_type, "PF");
+    const CBMDefinition *fmt = find_def(r, "Struct", "CUSTREC");
+    ASSERT_NOT_NULL(fmt);
+    ASSERT_STR_EQ(fmt->parent_class, "t.qddssrc.custmst.CUSTMST");
+    ASSERT_STR_EQ(fmt->docstring, "Customer record\nkey: CUSTNO");
+    ASSERT_EQ(fmt->start_line, 3);
+
+    const CBMDefinition *no = find_def(r, "Field", "CUSTNO");
+    ASSERT_NOT_NULL(no);
+    ASSERT_STR_EQ(no->qualified_name, "t.qddssrc.custmst.CUSTMST.CUSTREC.CUSTNO");
+    ASSERT_STR_EQ(no->return_type, "zoned(7:0)");
+    ASSERT_STR_EQ(no->docstring, "key 1. Customer number");
+    ASSERT_STR_EQ(find_def(r, "Field", "CUSTNM")->return_type, "char(60)");
+    ASSERT_STR_EQ(find_def(r, "Field", "CUSTNM")->docstring, "Customer name");
+    ASSERT_STR_EQ(find_def(r, "Field", "BAL")->return_type, "packed(13:2)");
+    ASSERT_STR_EQ(find_def(r, "Field", "REGION")->return_type, "ref");
+    ASSERT_EQ(count_label(r, "Field"), 4);
+    ASSERT_EQ(count_label(r, "Struct"), 2);
+    ASSERT_TRUE(has_import(r, "FLDREF", "FLDREF"));
+    ASSERT_EQ(r->rw.count, 0);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A logical file reads the physical file its PFILE names. */
+TEST(dds_logical_file) {
+    Src s = {{0}, 0};
+    dds_spec(&s, "R", "CUSTREC", "", "", "", "", "PFILE(MYLIB/CUSTMST)");
+    dds_spec(&s, "K", "CUSTNM", "", "", "", "", "");
+    CBMFileResult *r =
+        cbm_extract_file(s.buf, (int)s.len, CBM_LANG_RPG, "t", "qddssrc/custl1.lf", 0, NULL, NULL);
+    ASSERT_NOT_NULL(r);
+    const CBMDefinition *file = find_def(r, "Struct", "CUSTL1");
+    ASSERT_NOT_NULL(file);
+    ASSERT_STR_EQ(file->return_type, "LF");
+    ASSERT_TRUE(has_rw(r, "CUSTMST", "t.qddssrc.custl1.CUSTL1", 0));
+    ASSERT_TRUE(has_import(r, "CUSTMST", "CUSTMST"));
+    ASSERT_STR_EQ(find_def(r, "Struct", "CUSTREC")->docstring, "key: CUSTNM");
+    cbm_free_result(r);
+    PASS();
+}
+
 /* ── Pipeline: CALLS and IMPORTS edges across members ───────────── */
 
 typedef struct {
@@ -811,13 +1010,13 @@ static void rpg_cleanup(RpgProj *p) {
     unlink(side);
 }
 
-/* A CALLS edge whose source QN ends with src_suffix and target QN ends with
- * tgt_suffix. */
-static int rpg_calls_edge(cbm_store_t *store, const char *project, const char *src_suffix,
-                          const char *tgt_suffix) {
+/* An edge of `type` whose source QN ends with src_suffix and target QN ends
+ * with tgt_suffix. */
+static int rpg_edge(cbm_store_t *store, const char *project, const char *type,
+                    const char *src_suffix, const char *tgt_suffix) {
     cbm_edge_t *edges = NULL;
     int n = 0;
-    if (cbm_store_find_edges_by_type(store, project, "CALLS", &edges, &n) != CBM_STORE_OK) {
+    if (cbm_store_find_edges_by_type(store, project, type, &edges, &n) != CBM_STORE_OK) {
         return 0;
     }
     int found = 0;
@@ -883,7 +1082,7 @@ TEST(rpg_pipeline_resolves_program_call_and_copy) {
             CBM_STORE_OK) {
             cbm_store_free_nodes(nodes, functions);
         }
-        calls = rpg_calls_edge(p.store, p.project, "CUSTMNT.CUSTMNT", "GETCUST.GETCUST");
+        calls = rpg_edge(p.store, p.project, "CALLS", "CUSTMNT.CUSTMNT", "GETCUST.GETCUST");
         imports = cbm_store_count_edges_by_type(p.store, p.project, "IMPORTS");
     }
     rpg_cleanup(&p);
@@ -891,6 +1090,56 @@ TEST(rpg_pipeline_resolves_program_call_and_copy) {
     ASSERT_EQ(functions, 2);
     ASSERT_TRUE(calls);
     ASSERT_EQ(imports, 1);
+    PASS();
+}
+
+/* CL, RPG and DDS members of one library: the CL CALL lands on the RPG
+ * program and not on a same-named procedure of another member, and the file
+ * uses of CL, RPG and a logical file land on the physical file's Struct. */
+TEST(ibmi_pipeline_links_cl_rpg_and_dds) {
+    static const RpgFile files[] = {
+        {"QCLSRC/CUSTUPD.CLLE", "             PGM\n"
+                                "             DCLF       FILE(CUSTMST)\n"
+                                "             CALL       PGM(CUSTRPG)\n"
+                                "             ENDPGM\n"},
+        {"QRPGLESRC/CUSTRPG.RPGLE", "**FREE\n"
+                                    "dcl-f CUSTMST usage(*update);\n"
+                                    "read CUSTMST;\n"
+                                    "*inlr = *on;\n"},
+        {"QRPGLESRC/OTHER.RPGLE", "**FREE\n"
+                                  "ctl-opt nomain;\n"
+                                  "dcl-proc CUSTRPG export;\n"
+                                  "end-proc;\n"},
+        {"QDDSSRC/CUSTMST.PF", "     A          R CUSTREC\n"
+                               "     A            CUSTNO         7S 0\n"
+                               "     A          K CUSTNO\n"},
+        {"QDDSSRC/CUSTL1.LF", "     A          R CUSTREC                   PFILE(CUSTMST)\n"
+                              "     A          K CUSTNO\n"},
+    };
+    RpgProj p;
+    bool ok = rpg_index(&p, files, 5);
+    int call_pgm = 0;
+    int call_proc = 0;
+    int cl_reads = 0;
+    int rpg_reads = 0;
+    int rpg_writes = 0;
+    int lf_reads = 0;
+    if (ok) {
+        call_pgm = rpg_edge(p.store, p.project, "CALLS", "CUSTUPD.CUSTUPD", "CUSTRPG.CUSTRPG");
+        call_proc = rpg_edge(p.store, p.project, "CALLS", "CUSTUPD.CUSTUPD", "OTHER.CUSTRPG");
+        cl_reads = rpg_edge(p.store, p.project, "READS", "CUSTUPD.CUSTUPD", "CUSTMST.CUSTMST");
+        rpg_reads = rpg_edge(p.store, p.project, "READS", "CUSTRPG.CUSTRPG", "CUSTMST.CUSTMST");
+        rpg_writes = rpg_edge(p.store, p.project, "WRITES", "CUSTRPG.CUSTRPG", "CUSTMST.CUSTMST");
+        lf_reads = rpg_edge(p.store, p.project, "READS", "CUSTL1.CUSTL1", "CUSTMST.CUSTMST");
+    }
+    rpg_cleanup(&p);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(call_pgm);
+    ASSERT_FALSE(call_proc);
+    ASSERT_TRUE(cl_reads);
+    ASSERT_TRUE(rpg_reads);
+    ASSERT_TRUE(rpg_writes);
+    ASSERT_TRUE(lf_reads);
     PASS();
 }
 
@@ -911,5 +1160,10 @@ SUITE(extraction_rpg) {
     RUN_TEST(rpg_copy_directive_forms);
     RUN_TEST(rpg_free_statement_lexing);
     RUN_TEST(rpg_fixed_short_lines);
+    RUN_TEST(rpg_file_uses);
+    RUN_TEST(cl_program_calls_and_files);
+    RUN_TEST(dds_physical_file);
+    RUN_TEST(dds_logical_file);
     RUN_TEST(rpg_pipeline_resolves_program_call_and_copy);
+    RUN_TEST(ibmi_pipeline_links_cl_rpg_and_dds);
 }

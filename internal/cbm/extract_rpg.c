@@ -17,8 +17,18 @@
 //   Variable  module-level standalone fields (dcl-s / D-spec S) and named
 //             constants (dcl-c / D-spec C)
 //   calls     exsr / EXSR / CASxx, callp and bare prototyped calls, CALL and
-//             CALLB with a literal target, `exec sql call`
+//             CALLB with a literal target, `exec sql call`. A program target
+//             is emitted as PGM.PGM (the program def's QN tail) so the
+//             registry prefers it over a same-named subroutine elsewhere.
 //   imports   /copy and /include
+//   reads/writes  the files of F-specs and dcl-f, from the program def
+//             (input reads, output writes, update and workstn both); the
+//             DDS extractor (extract_dds.c) indexes each file as a Struct of
+//             the same name, which becomes the target.
+//
+// CL (.clp .clle .mnucmd) and DDS (.pf .lf .dspf .prtf .icff) members are
+// registered under this same language and dispatched at entry to their own
+// scanners (extract_cl.c, extract_dds.c).
 //
 // A prototype (dcl-pr / D-spec PR) is not a definition: it binds a local name
 // to an external program (extpgm) or procedure (extproc), so a call through it
@@ -76,6 +86,15 @@ enum {
     /* Control specification (H): keywords run from column 7. */
     H_KEYWORDS_FROM = 6,
 
+    /* File specification (F): RPG IV names the file in columns 7-16 with the
+     * file type (I/O/U/C) in column 17; RPG II/III in columns 7-14 with the
+     * type in column 15. */
+    F_NAME_FROM = 6,
+    F4_NAME_TO = 16,
+    F4_TYPE_COL = 16,
+    F3_NAME_TO = 14,
+    F3_TYPE_COL = 14,
+
     /* RPG IV calculation specification (C). */
     C4_FACTOR1_FROM = 11,
     C4_FACTOR1_TO = 25,
@@ -130,6 +149,7 @@ typedef struct {
 typedef struct {
     const char *local;    /* prototype name as written */
     const char *external; /* call target the prototype binds it to */
+    bool is_program;      /* extpgm: the target is an IBM i program object */
 } Prototype;
 
 typedef struct {
@@ -188,7 +208,22 @@ typedef struct {
     uint32_t line;
     bool is_subroutine;   /* exsr / EXSR / CASxx target */
     bool maybe_subscript; /* `name(...)` in an expression: an array unless callable */
+    bool is_program;      /* CALL 'PGM' / exec sql call: an IBM i program object */
 } CallSite;
+
+/* A file the program opens (F-spec or dcl-f). usage: I input, O output,
+ * U update (read and write), C combined (a workstation file). */
+typedef struct {
+    const char *name;
+    char usage;
+    uint32_t line;
+} FileUse;
+
+typedef struct {
+    FileUse *items;
+    int count;
+    int cap;
+} FileUseList;
 
 typedef struct {
     CallSite *items;
@@ -224,6 +259,8 @@ typedef struct {
     StrList proc_names; /* procedure names, for the exact spelling of a callee */
     SubrList subrs;
     CallList calls;
+    FileUseList file_uses; /* files opened by F-specs / dcl-f: READS and WRITES edges */
+    bool program_emitted;  /* the program Function def exists (owner of the file edges) */
 
     /* Control options. */
     bool nomain;
@@ -978,23 +1015,27 @@ static void param_add(RpgState *s, const char *name, const char *type) {
     list_push(s->a, &s->declared, name);
 }
 
-static void prototype_add(RpgState *s, const char *local, const char *external) {
+static void prototype_add(RpgState *s, const char *local, const char *external, bool is_program) {
     PrototypeList *l = &s->prototypes;
     RPG_GROW(l, s->a);
-    Prototype p = {local, external};
+    Prototype p = {local, external, is_program};
     l->items[l->count++] = p;
 }
 
 /* The external target named by an extpgm / extproc keyword in `keywords`, or
  * NULL when neither is present. A bare extpgm names the prototype itself,
- * upper-cased as the compiler does; a bare extproc keeps the spelling. */
-static const char *prototype_keyword_target(CBMArena *a, const char *keywords, const char *name) {
+ * upper-cased as the compiler does; a bare extproc keeps the spelling.
+ * `*is_program` is set when the keyword was extpgm. */
+static const char *prototype_keyword_target(CBMArena *a, const char *keywords, const char *name,
+                                            bool *is_program) {
     Cursor c = cursor_of(keywords);
     const char *group = NULL;
     const char *w = NULL;
+    *is_program = false;
     while ((w = next_word(a, &c, &group)) != NULL) {
         if (ieq(w, "extpgm")) {
             const char *ext = external_name(a, group_inner(a, group), true);
+            *is_program = true;
             return ext ? ext : dup_upper(a, name);
         }
         if (ieq(w, "extproc")) {
@@ -1005,16 +1046,107 @@ static const char *prototype_keyword_target(CBMArena *a, const char *keywords, c
     return NULL;
 }
 
+/* ── Files ────────────────────────────────────────────────────────── */
+
+static void file_use_add(RpgState *s, const char *name, char usage, uint32_t line) {
+    if (!name || !name[0] || !is_name_start(name[0])) {
+        return;
+    }
+    FileUseList *l = &s->file_uses;
+    RPG_GROW(l, s->a);
+    FileUse fu = {dup_upper(s->a, name), usage, line};
+    l->items[l->count++] = fu;
+}
+
+static bool is_file_type(char c) {
+    return c == 'I' || c == 'O' || c == 'U' || c == 'C';
+}
+
+/* Fixed-form F-spec: the file name and its type (input / output / update /
+ * combined). A line with a blank name continues the previous entry (K
+ * options, RENAME, PREFIX) and carries no file. A member whose SRCTYPE does
+ * not match its layout is read with the other dialect's columns. */
+static void fixed_f_spec(RpgState *s, const char *t, int len, uint32_t line) {
+    bool iv = s->dialect == DIALECT_RPG_IV;
+    const char *name = field(s->a, t, len, F_NAME_FROM, iv ? F4_NAME_TO : F3_NAME_TO);
+    char usage = (char)toupper((unsigned char)field_char(t, len, iv ? F4_TYPE_COL : F3_TYPE_COL));
+    if (!name || !is_file_type(usage) || strchr(name, ' ')) {
+        const char *alt = field(s->a, t, len, F_NAME_FROM, iv ? F3_NAME_TO : F4_NAME_TO);
+        char alt_usage =
+            (char)toupper((unsigned char)field_char(t, len, iv ? F3_TYPE_COL : F4_TYPE_COL));
+        if (!alt || !is_file_type(alt_usage) || strchr(alt, ' ')) {
+            return;
+        }
+        name = alt;
+        usage = alt_usage;
+    }
+    file_use_add(s, name, usage, line);
+}
+
+/* Free-form `dcl-f NAME [type] [usage(*input:*output:*update:*delete)]
+ * [workstn|printer|disk ...]`. Without usage() a disk file is input, a
+ * printer file output and a workstation file combined. */
+static void free_dcl_f(RpgState *s, Cursor *c, uint32_t line) {
+    const char *name = next_word(s->a, c, NULL);
+    if (!name) {
+        return;
+    }
+    char usage = 'I';
+    bool reads = false;
+    bool writes = false;
+    Cursor k = *c;
+    const char *group = NULL;
+    const char *w = NULL;
+    while ((w = next_word(s->a, &k, &group)) != NULL) {
+        if (ieq(w, "usage") && group) {
+            char *inner = dup_upper(s->a, group_inner(s->a, group));
+            if (inner) {
+                /* *UPDATE and *DELETE imply *INPUT */
+                reads = reads || strstr(inner, "*INPUT") != NULL ||
+                        strstr(inner, "*UPDATE") != NULL || strstr(inner, "*DELETE") != NULL;
+                writes = writes || strstr(inner, "*OUTPUT") != NULL ||
+                         strstr(inner, "*UPDATE") != NULL || strstr(inner, "*DELETE") != NULL;
+            }
+        } else if (ieq(w, "workstn")) {
+            usage = 'C';
+        } else if (ieq(w, "printer")) {
+            usage = 'O';
+        }
+    }
+    if (reads || writes) {
+        usage = reads && writes ? 'U' : (writes ? 'O' : 'I');
+    }
+    file_use_add(s, name, usage, line);
+}
+
+/* READS / WRITES from the program def (or the module when the member has no
+ * program def) to the file name; the registry binds it to the DDS member's
+ * Struct of the same name when that member is indexed. */
+static void emit_file_uses(RpgState *s) {
+    const char *owner = s->program_emitted ? s->program_qn : s->module_qn;
+    for (int i = 0; i < s->file_uses.count; i++) {
+        const FileUse *fu = &s->file_uses.items[i];
+        if (fu->usage != 'O') {
+            CBMReadWrite rw = {.var_name = fu->name, .enclosing_func_qn = owner, .is_write = false};
+            cbm_rw_push(&s->result->rw, s->a, rw);
+        }
+        if (fu->usage != 'I') {
+            CBMReadWrite rw = {.var_name = fu->name, .enclosing_func_qn = owner, .is_write = true};
+            cbm_rw_push(&s->result->rw, s->a, rw);
+        }
+    }
+}
+
 /* ── Calls ────────────────────────────────────────────────────────── */
 
 static void call_add(RpgState *s, const char *callee, uint32_t line, bool is_subroutine,
-                     bool maybe_subscript) {
+                     bool maybe_subscript, bool is_program) {
     if (!callee || !callee[0]) {
         return;
     }
     CallList *l = &s->calls;
     RPG_GROW(l, s->a);
-    CallSite cs = {callee, enclosing_qn(s), line, is_subroutine, maybe_subscript};
+    CallSite cs = {callee, enclosing_qn(s), line, is_subroutine, maybe_subscript, is_program};
     l->items[l->count++] = cs;
 }
 
@@ -1063,7 +1195,8 @@ static void scan_calls(RpgState *s, const char *text, uint32_t line) {
             q++;
         }
         if (q < c.end && *q == '(' && !is_reserved_at(s, text, start, c.p)) {
-            call_add(s, cbm_arena_strndup(s->a, start, (size_t)(c.p - start)), line, false, true);
+            call_add(s, cbm_arena_strndup(s->a, start, (size_t)(c.p - start)), line, false, true,
+                     false);
         }
     }
 }
@@ -1082,7 +1215,7 @@ static void sql_call(RpgState *s, const char *text, uint32_t line) {
             return;
         }
         const char *dot = strrchr(target, '.');
-        call_add(s, dup_upper(s->a, dot ? dot + SKIP_ONE : target), line, false, false);
+        call_add(s, dup_upper(s->a, dot ? dot + SKIP_ONE : target), line, false, false, true);
         return;
     }
 }
@@ -1093,7 +1226,7 @@ static void literal_call(RpgState *s, const char *factor2, uint32_t line, bool i
     if (!factor2 || (factor2[0] != '\'' && factor2[0] != '"')) {
         return;
     }
-    call_add(s, external_name(s->a, factor2, is_program), line, false, false);
+    call_add(s, external_name(s->a, factor2, is_program), line, false, false, is_program);
 }
 
 /* A subroutine's exsr resolves to the def in the same procedure or main line
@@ -1132,7 +1265,8 @@ static const char *resolve_subroutine(const RpgState *s, const CallSite *cs) {
     return found->qn;
 }
 
-static const char *resolve_callee(const RpgState *s, const CallSite *cs) {
+static const char *resolve_callee(const RpgState *s, const CallSite *cs, bool *is_program) {
+    *is_program = false;
     if (cs->is_subroutine) {
         return resolve_subroutine(s, cs);
     }
@@ -1141,19 +1275,32 @@ static const char *resolve_callee(const RpgState *s, const CallSite *cs) {
     }
     for (int i = 0; i < s->prototypes.count; i++) {
         if (ieq(s->prototypes.items[i].local, cs->callee)) {
+            *is_program = s->prototypes.items[i].is_program;
             return s->prototypes.items[i].external;
         }
     }
     const char *proc = list_find_ieq(&s->proc_names, cs->callee);
-    return proc ? proc : cs->callee;
+    if (proc) {
+        return proc;
+    }
+    *is_program = cs->is_program;
+    return cs->callee;
 }
 
 static void resolve_calls(RpgState *s) {
     for (int i = 0; i < s->calls.count; i++) {
         const CallSite *cs = &s->calls.items[i];
-        const char *callee = resolve_callee(s, cs);
+        bool is_program = false;
+        const char *callee = resolve_callee(s, cs, &is_program);
         if (!callee) {
             continue;
+        }
+        if (is_program && !strchr(callee, '.')) {
+            /* PGM.PGM is the QN tail of a program def (module MEMBER, def
+             * PROGRAM): the registry's qualified-suffix match then lands on
+             * the program and not on a same-named subroutine of another
+             * member, which a bare name would tie with. */
+            callee = cbm_arena_sprintf(s->a, "%s.%s", callee, callee);
         }
         CBMCall call;
         memset(&call, 0, sizeof(call));
@@ -1312,8 +1459,9 @@ static void free_dcl_pr(RpgState *s, Cursor *c) {
         return;
     }
     type_after(s->a, c);
-    const char *external = prototype_keyword_target(s->a, c->p, name);
-    prototype_add(s, name, external ? external : name);
+    bool is_program = false;
+    const char *external = prototype_keyword_target(s->a, c->p, name, &is_program);
+    prototype_add(s, name, external ? external : name, is_program);
     if (!words_contain(s->a, *c, "end-pr")) {
         s->decl = DECL_PR;
     }
@@ -1366,7 +1514,9 @@ static bool free_declaration(RpgState *s, const char *op, Cursor *c, uint32_t li
         module_variable(s, name, line, type, words_contain(s->a, *c, "export"));
     } else if (ieq(op, "dcl-c")) {
         module_variable(s, next_word(s->a, c, NULL), line, NULL, false);
-    } else if (!ieq(op, "dcl-f") && !ieq(op, "dcl-subf") && !ieq(op, "dcl-parm")) {
+    } else if (ieq(op, "dcl-f")) {
+        free_dcl_f(s, c, line);
+    } else if (!ieq(op, "dcl-subf") && !ieq(op, "dcl-parm")) {
         return false;
     }
     return true;
@@ -1383,9 +1533,9 @@ static void free_executable(RpgState *s, const char *op, Cursor *c, const char *
     } else if (ieq(op, "endsr")) {
         subr_end(s, line);
     } else if (ieq(op, "exsr")) {
-        call_add(s, next_word(s->a, c, NULL), line, true, false);
+        call_add(s, next_word(s->a, c, NULL), line, true, false, false);
     } else if (ieq(op, "callp")) {
-        call_add(s, next_word(s->a, c, NULL), line, false, false);
+        call_add(s, next_word(s->a, c, NULL), line, false, false, false);
     } else if (ieq(op, "exec")) {
         sql_call(s, text, line);
     } else if (is_condition_word(op)) {
@@ -1637,9 +1787,11 @@ static void fixed_d_continuation(RpgState *s, const char *keywords) {
         return;
     }
     Prototype *p = &s->prototypes.items[s->prototypes.count - SKIP_ONE];
-    const char *external = prototype_keyword_target(s->a, keywords, p->local);
+    bool is_program = false;
+    const char *external = prototype_keyword_target(s->a, keywords, p->local, &is_program);
     if (external) {
         p->external = external;
+        p->is_program = is_program;
     }
 }
 
@@ -1685,8 +1837,10 @@ static void fixed_d_spec(RpgState *s, const char *t, int len, uint32_t line) {
     decl_end(s);
     bool exported = keywords && words_contain(s->a, cursor_of(keywords), "export");
     if (ieq(deftype, "PR") && name) {
-        const char *external = keywords ? prototype_keyword_target(s->a, keywords, name) : NULL;
-        prototype_add(s, name, external ? external : name);
+        bool is_program = false;
+        const char *external =
+            keywords ? prototype_keyword_target(s->a, keywords, name, &is_program) : NULL;
+        prototype_add(s, name, external ? external : name, is_program);
         s->decl = DECL_PR;
     } else if (ieq(deftype, "PI")) {
         FuncDef *f = s->proc.active ? &s->proc : &s->program;
@@ -1756,7 +1910,7 @@ static void pending_flush(RpgState *s) {
         const char *expr = s->pending_expr;
         if (ieq(s->pending_opcode, "CALLP")) {
             Cursor c = cursor_of(expr);
-            call_add(s, next_word(s->a, &c, NULL), s->pending_line, false, false);
+            call_add(s, next_word(s->a, &c, NULL), s->pending_line, false, false, false);
         } else {
             scan_calls(s, expr, s->pending_line);
         }
@@ -1790,7 +1944,7 @@ static bool fixed_c_structural(RpgState *s, const char *op, const char *f1, cons
         return true;
     }
     if (ieq(op, "EXSR")) {
-        call_add(s, f2, line, true, false);
+        call_add(s, f2, line, true, false, false);
         return true;
     }
     if (ieq(op, "CALL") || ieq(op, "CALLB")) {
@@ -1804,7 +1958,7 @@ static bool fixed_c_structural(RpgState *s, const char *op, const char *f1, cons
         }
         m->last_was_cas = true;
         metrics_branch(m);
-        call_add(s, result, line, true, false);
+        call_add(s, result, line, true, false, false);
         return true;
     }
     return false;
@@ -1936,7 +2090,12 @@ static void fixed_line(RpgState *s, const char *t, int len, uint32_t line) {
     case 'C':
         fixed_c_spec(s, t, len, line);
         break;
-    default: /* F, I, O, E, L: files, records and tables carry no structure */
+    case 'F':
+        fixed_f_spec(s, t, len, line);
+        decl_end(s);
+        doc_reset(s);
+        break;
+    default: /* I, O, E, L: records and tables carry no structure */
         decl_end(s);
         doc_reset(s);
         break;
@@ -2018,9 +2177,24 @@ static void emit_program(RpgState *s, uint32_t last_line) {
         return;
     }
     emit_function(s, &s->program, s->program.end_line, true);
+    s->program_emitted = true;
 }
 
 void cbm_extract_rpg(CBMExtractCtx *ctx) {
+    /* CL and DDS members share the language (one IBM i family, so the
+     * registry never treats a CL -> RPG call or an RPG -> DDS file use as a
+     * cross-language guess) and have their own line scanners. */
+    {
+        const char *base0 = path_basename(ctx->rel_path ? ctx->rel_path : "");
+        if (cbm_ibmi_is_cl(base0)) {
+            cbm_extract_cl(ctx);
+            return;
+        }
+        if (cbm_ibmi_is_dds(base0)) {
+            cbm_extract_dds(ctx);
+            return;
+        }
+    }
     RpgState st;
     memset(&st, 0, sizeof(st));
     st.a = ctx->arena;
@@ -2076,5 +2250,6 @@ void cbm_extract_rpg(CBMExtractCtx *ctx) {
     subr_end(&st, total);
     proc_end(&st, total);
     emit_program(&st, total);
+    emit_file_uses(&st);
     resolve_calls(&st);
 }

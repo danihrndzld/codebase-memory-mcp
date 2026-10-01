@@ -318,6 +318,21 @@ TEST(lang_ext_rpg3) {
     ASSERT_STR_EQ(cbm_language_name(CBM_LANG_RPG), "RPG");
     PASS();
 }
+
+/* CL and DDS members share the RPG language so CL -> RPG calls and RPG -> DDS
+ * file uses resolve as same-language edges; .cl and .cmd stay unclaimed. */
+TEST(lang_ext_ibmi_cl_dds) {
+    ASSERT_EQ(cbm_language_for_extension(".clle"), CBM_LANG_RPG);
+    ASSERT_EQ(cbm_language_for_extension(".CLP"), CBM_LANG_RPG);
+    ASSERT_EQ(cbm_language_for_extension(".mnucmd"), CBM_LANG_RPG);
+    ASSERT_EQ(cbm_language_for_extension(".PF"), CBM_LANG_RPG);
+    ASSERT_EQ(cbm_language_for_extension(".lf"), CBM_LANG_RPG);
+    ASSERT_EQ(cbm_language_for_extension(".DSPF"), CBM_LANG_RPG);
+    ASSERT_EQ(cbm_language_for_extension(".prtf38"), CBM_LANG_RPG);
+    ASSERT_NEQ(cbm_language_for_extension(".cl"), CBM_LANG_RPG);
+    ASSERT_NEQ(cbm_language_for_extension(".cmd"), CBM_LANG_RPG);
+    PASS();
+}
 TEST(lang_ext_verilog) {
     ASSERT_EQ(cbm_language_for_extension(".v"), CBM_LANG_VERILOG);
     PASS();
@@ -1352,6 +1367,7 @@ SUITE(language) {
     RUN_TEST(lang_ext_cbl);
     RUN_TEST(lang_ext_rpgle);
     RUN_TEST(lang_ext_rpg3);
+    RUN_TEST(lang_ext_ibmi_cl_dds);
     RUN_TEST(lang_ext_verilog);
     RUN_TEST(lang_ext_sv);
     RUN_TEST(lang_ext_emacslisp);
