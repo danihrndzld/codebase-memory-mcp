@@ -442,6 +442,22 @@ FILE *cbm_fopen(const char *path, const char *mode) {
  * policy (server/runner images), a plain _wmkdir yields an Administrators-owned
  * directory that the launcher/activation exact-owner validators reject. Only
  * freshly created directories are stamped; pre-existing ones keep their owner. */
+
+/* LocalSystem SID (S-1-5-18). Endpoint-security agents run as SYSTEM and
+ * must be able to open our files to scan them; a DACL without SYSTEM makes
+ * MoveFileEx(REPLACE_EXISTING) fail with ERROR_ACCESS_DENIED on hardened
+ * hosts (CrowdStrike / Check Point / Netskope). SYSTEM is a trusted identity
+ * for every validator here, so granting it changes nothing security-wise. */
+static PSID cbm_local_system_sid_fs(void) {
+    static unsigned char buffer[SECURITY_MAX_SID_SIZE];
+    static BOOL ready = FALSE;
+    if (!ready) {
+        DWORD size = sizeof(buffer);
+        ready = CreateWellKnownSid(WinLocalSystemSid, NULL, (PSID)buffer, &size);
+    }
+    return ready ? (PSID)buffer : NULL;
+}
+
 static void cbm_windows_stamp_dir_owner(const wchar_t *path) {
     HANDLE token = NULL;
     TOKEN_USER *user = NULL;
@@ -452,20 +468,28 @@ static void cbm_windows_stamp_dir_owner(const wchar_t *path) {
         GetLastError() == ERROR_INSUFFICIENT_BUFFER && (user = malloc(needed)) != NULL &&
         GetTokenInformation(token, TokenUser, user, needed, &needed) && user->User.Sid &&
         IsValidSid(user->User.Sid)) {
-        EXPLICIT_ACCESSW access;
-        memset(&access, 0, sizeof(access));
-        access.grfAccessPermissions = GENERIC_ALL;
-        access.grfAccessMode = SET_ACCESS;
-        access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-        access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        access.Trustee.TrusteeType = TRUSTEE_IS_USER;
-        access.Trustee.ptstrName = (LPWSTR)user->User.Sid;
+        EXPLICIT_ACCESSW access[2];
+        memset(access, 0, sizeof(access));
+        access[0].grfAccessPermissions = GENERIC_ALL;
+        access[0].grfAccessMode = SET_ACCESS;
+        access[0].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+        access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+        access[0].Trustee.ptstrName = (LPWSTR)user->User.Sid;
+        PSID system_sid = cbm_local_system_sid_fs();
+        ULONG entries = 1U;
+        if (system_sid) {
+            access[1] = access[0];
+            access[1].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+            access[1].Trustee.ptstrName = (LPWSTR)system_sid;
+            entries = 2U;
+        }
         HANDLE directory =
             CreateFileW(path, WRITE_OWNER | WRITE_DAC | READ_CONTROL,
                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (directory != INVALID_HANDLE_VALUE) {
-            if (SetEntriesInAclW(1U, &access, NULL, &acl) == ERROR_SUCCESS) {
+            if (SetEntriesInAclW(entries, access, NULL, &acl) == ERROR_SUCCESS) {
                 (void)SetSecurityInfo(directory, SE_FILE_OBJECT,
                                       OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
                                           PROTECTED_DACL_SECURITY_INFORMATION,

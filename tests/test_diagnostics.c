@@ -482,7 +482,8 @@ static bool diagnostics_windows_current_user_sid(void **information_out, PSID *s
 }
 
 /* Owner is the current user AND the protected DACL grants access to that
- * owner alone — the Windows equivalent of the POSIX 0700/0600 assertions. */
+ * owner and, optionally, LocalSystem (endpoint-security scanners run as
+ * SYSTEM) — the Windows equivalent of the POSIX 0700/0600 assertions. */
 static bool diagnostics_windows_path_owner_private(const char *path, bool directory) {
     void *user_information = NULL;
     PSID user_sid = NULL;
@@ -505,13 +506,21 @@ static bool diagnostics_windows_path_owner_private(const char *path, bool direct
                               &dacl, NULL, &descriptor) == ERROR_SUCCESS &&
               owner && IsValidSid(owner) && EqualSid(owner, user_sid) &&
               GetSecurityDescriptorControl(descriptor, &control, &revision) != 0 &&
-              (control & SE_DACL_PROTECTED) != 0 && dacl && dacl->AceCount == 1;
-    if (ok) {
+              (control & SE_DACL_PROTECTED) != 0 && dacl && dacl->AceCount >= 1 &&
+              dacl->AceCount <= 2;
+    bool user_seen = false;
+    for (DWORD i = 0; ok && i < dacl->AceCount; i++) {
         void *ace = NULL;
-        ok = GetAce(dacl, 0, &ace) != 0 &&
-             ((ACE_HEADER *)ace)->AceType == ACCESS_ALLOWED_ACE_TYPE &&
-             EqualSid((PSID)&((ACCESS_ALLOWED_ACE *)ace)->SidStart, user_sid);
+        ok = GetAce(dacl, i, &ace) != 0 &&
+             ((ACE_HEADER *)ace)->AceType == ACCESS_ALLOWED_ACE_TYPE;
+        if (ok) {
+            PSID ace_sid = (PSID)&((ACCESS_ALLOWED_ACE *)ace)->SidStart;
+            bool is_user = EqualSid(ace_sid, user_sid) != 0;
+            ok = is_user || IsWellKnownSid(ace_sid, WinLocalSystemSid);
+            user_seen = user_seen || is_user;
+        }
     }
+    ok = ok && user_seen;
     if (descriptor) {
         (void)LocalFree(descriptor);
     }

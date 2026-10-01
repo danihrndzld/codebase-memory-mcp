@@ -3802,6 +3802,7 @@ typedef struct {
     PSECURITY_DESCRIPTOR descriptor;
     SECURITY_ATTRIBUTES attributes;
     PACL directory_acl;
+    PACL file_acl; /* user + SYSTEM, leaves (files) */
     PSECURITY_DESCRIPTOR directory_descriptor;
     SECURITY_ATTRIBUTES directory_attributes;
 } win_security_t;
@@ -4014,6 +4015,7 @@ static void win_security_destroy(win_security_t *security) {
     free(security->acl);
     free(security->directory_descriptor);
     free(security->directory_acl);
+    free(security->file_acl);
     free(security->user_sid);
     if (security->advapi) {
         (void)FreeLibrary(security->advapi);
@@ -4048,6 +4050,8 @@ static void *win_token_user_query(win_security_t *security, HANDLE token, PSID *
             return false;                                                                      \
         }                                                                                      \
     } while (0)
+
+static PSID cbm_local_system_sid_ipc(void);
 
 static bool win_security_init(win_security_t *security) {
     memset(security, 0, sizeof(*security));
@@ -4149,13 +4153,31 @@ static bool win_security_init(win_security_t *security) {
      * GENERIC_ALL. Windows splits an inheritable generic-rights ACE into an
      * effective mapped ACE plus an INHERIT_ONLY one carrying the generic bits,
      * and the owner-only DACL validators require exactly one ACE. */
-    security->directory_acl = malloc(acl_size);
+    PSID system_sid = cbm_local_system_sid_ipc();
+    DWORD system_sid_length = system_sid ? security->get_length_sid(system_sid) : 0;
+    size_t acl2_size = sizeof(ACL) + 2 * (sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD)) + sid_length +
+                       system_sid_length;
+    security->file_acl = malloc(acl2_size);
+    if (!security->file_acl ||
+        !security->initialize_acl(security->file_acl, (DWORD)acl2_size, ACL_REVISION) ||
+        !security->add_access_allowed_ace(security->file_acl, ACL_REVISION, FILE_ALL_ACCESS,
+                                          security->user_sid) ||
+        (system_sid && !security->add_access_allowed_ace(security->file_acl, ACL_REVISION,
+                                                         FILE_ALL_ACCESS, system_sid))) {
+        win_security_destroy(security);
+        return false;
+    }
+    security->directory_acl = malloc(acl2_size);
     security->directory_descriptor = malloc(SECURITY_DESCRIPTOR_MIN_LENGTH);
     if (!security->directory_acl || !security->directory_descriptor ||
-        !security->initialize_acl(security->directory_acl, (DWORD)acl_size, ACL_REVISION) ||
+        !security->initialize_acl(security->directory_acl, (DWORD)acl2_size, ACL_REVISION) ||
         !security->add_access_allowed_ace_ex(security->directory_acl, ACL_REVISION,
                                              CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
                                              FILE_ALL_ACCESS, security->user_sid) ||
+        (system_sid &&
+         !security->add_access_allowed_ace_ex(security->directory_acl, ACL_REVISION,
+                                              CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+                                              FILE_ALL_ACCESS, system_sid)) ||
         !security->initialize_security_descriptor(security->directory_descriptor,
                                                   SECURITY_DESCRIPTOR_REVISION) ||
         !security->set_security_descriptor_dacl(security->directory_descriptor, TRUE,
@@ -4172,6 +4194,21 @@ static bool win_security_init(win_security_t *security) {
 }
 
 #undef RESOLVE_ADVAPI_MEMBER
+
+/* LocalSystem SID (S-1-5-18). Endpoint-security agents run as SYSTEM and
+ * must be able to open our files to scan them; a DACL without SYSTEM makes
+ * MoveFileEx(REPLACE_EXISTING) fail with ERROR_ACCESS_DENIED on hardened
+ * hosts (CrowdStrike / Check Point / Netskope). SYSTEM is a trusted identity
+ * for every validator here, so granting it changes nothing security-wise. */
+static PSID cbm_local_system_sid_ipc(void) {
+    static unsigned char buffer[SECURITY_MAX_SID_SIZE];
+    static BOOL ready = FALSE;
+    if (!ready) {
+        DWORD size = sizeof(buffer);
+        ready = CreateWellKnownSid(WinLocalSystemSid, NULL, (PSID)buffer, &size);
+    }
+    return ready ? (PSID)buffer : NULL;
+}
 
 static bool win_kernel_mutex_current_user_only(win_security_t *security, HANDLE mutex) {
     if (!security || !mutex || mutex == INVALID_HANDLE_VALUE) {
@@ -4713,17 +4750,29 @@ static bool win_file_dacl_is_owner_only(win_security_t *security, HANDLE file) {
                  security->is_valid_acl(dacl) &&
                  security->get_acl_information(dacl, &information, sizeof(information),
                                                AclSizeInformation) &&
-                 information.AceCount == 1U && security->get_ace(dacl, 0, &opaque_ace) &&
-                 opaque_ace;
+                 information.AceCount >= 1U && information.AceCount <= 2U;
     if (valid) {
-        ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)opaque_ace;
-        PSID ace_sid = (PSID)&ace->SidStart;
-        valid = ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
-                ace->Header.AceSize >= sizeof(ACCESS_ALLOWED_ACE) &&
-                (ace->Header.AceFlags & (INHERITED_ACE | INHERIT_ONLY_ACE)) == 0 &&
-                security->is_valid_sid(ace_sid) &&
-                security->equal_sid(ace_sid, security->user_sid) &&
-                (ace->Mask == FILE_ALL_ACCESS || ace->Mask == GENERIC_ALL);
+        bool user_seen = false;
+        for (DWORD i = 0; valid && i < information.AceCount; i++) {
+            opaque_ace = NULL;
+            if (!security->get_ace(dacl, i, &opaque_ace) || !opaque_ace) {
+                valid = false;
+                break;
+            }
+            ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)opaque_ace;
+            PSID ace_sid = (PSID)&ace->SidStart;
+            bool is_user =
+                security->is_valid_sid(ace_sid) && security->equal_sid(ace_sid, security->user_sid);
+            bool is_system = security->is_valid_sid(ace_sid) &&
+                             security->is_well_known_sid(ace_sid, WinLocalSystemSid);
+            valid = ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+                    ace->Header.AceSize >= sizeof(ACCESS_ALLOWED_ACE) &&
+                    (ace->Header.AceFlags & (INHERITED_ACE | INHERIT_ONLY_ACE)) == 0 &&
+                    (is_user || is_system) &&
+                    (ace->Mask == FILE_ALL_ACCESS || ace->Mask == GENERIC_ALL);
+            user_seen = user_seen || is_user;
+        }
+        valid = valid && user_seen;
     }
     if (descriptor) {
         (void)LocalFree(descriptor);
@@ -4836,7 +4885,7 @@ static void win_repair_runtime_children(win_security_t *security, const wchar_t 
                     child, SE_FILE_OBJECT,
                     (DWORD)OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
                         PROTECTED_DACL_SECURITY_INFORMATION,
-                    security->user_sid, NULL, security->acl, NULL) == ERROR_SUCCESS) {
+                    security->user_sid, NULL, security->file_acl, NULL) == ERROR_SUCCESS) {
                 repaired++;
             } else {
                 failed++;
@@ -5098,7 +5147,7 @@ static HANDLE win_private_log_file_open(const wchar_t *path, DWORD creation_disp
     if (valid && owner_ok) {
         secure_result = security->set_security_info(
             file, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            NULL, NULL, security->acl, NULL);
+            NULL, NULL, security->file_acl, NULL);
     }
     if (!valid || !owner_ok || secure_result != ERROR_SUCCESS) {
         (void)CloseHandle(file);
