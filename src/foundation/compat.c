@@ -84,6 +84,22 @@ char *cbm_strcasestr(const char *haystack, const char *needle) {
  * if the descriptor cannot be built or creation fails; the caller falls
  * back to plain _mkdir so degraded environments (Wine) keep working —
  * downstream validation still gates security there. */
+
+/* LocalSystem SID (S-1-5-18). Endpoint-security agents run as SYSTEM and
+ * must be able to open our files to scan them; a DACL without SYSTEM makes
+ * MoveFileEx(REPLACE_EXISTING) fail with ERROR_ACCESS_DENIED on hardened
+ * hosts (CrowdStrike / Check Point / Netskope). SYSTEM is a trusted identity
+ * for every validator here, so granting it changes nothing security-wise. */
+static PSID cbm_local_system_sid_compat(void) {
+    static unsigned char buffer[SECURITY_MAX_SID_SIZE];
+    static BOOL ready = FALSE;
+    if (!ready) {
+        DWORD size = sizeof(buffer);
+        ready = CreateWellKnownSid(WinLocalSystemSid, NULL, (PSID)buffer, &size);
+    }
+    return ready ? (PSID)buffer : NULL;
+}
+
 static bool win_mkdtemp_private_create(const char *path) {
     bool created = false;
     HANDLE token = NULL;
@@ -96,16 +112,24 @@ static bool win_mkdtemp_private_create(const char *path) {
         GetLastError() == ERROR_INSUFFICIENT_BUFFER && (user = malloc(needed)) != NULL &&
         GetTokenInformation(token, TokenUser, user, needed, &needed) && user->User.Sid &&
         IsValidSid(user->User.Sid)) {
-        EXPLICIT_ACCESSW access;
-        memset(&access, 0, sizeof(access));
-        access.grfAccessPermissions = GENERIC_ALL;
-        access.grfAccessMode = SET_ACCESS;
-        access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-        access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        access.Trustee.TrusteeType = TRUSTEE_IS_USER;
-        access.Trustee.ptstrName = (LPWSTR)user->User.Sid;
+        EXPLICIT_ACCESSW access[2];
+        memset(access, 0, sizeof(access));
+        access[0].grfAccessPermissions = GENERIC_ALL;
+        access[0].grfAccessMode = SET_ACCESS;
+        access[0].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+        access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+        access[0].Trustee.ptstrName = (LPWSTR)user->User.Sid;
+        PSID system_sid = cbm_local_system_sid_compat();
+        ULONG entries = 1;
+        if (system_sid) {
+            access[1] = access[0];
+            access[1].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+            access[1].Trustee.ptstrName = (LPWSTR)system_sid;
+            entries = 2;
+        }
         SECURITY_DESCRIPTOR descriptor;
-        if (SetEntriesInAclW(1, &access, NULL, &acl) == ERROR_SUCCESS &&
+        if (SetEntriesInAclW(entries, access, NULL, &acl) == ERROR_SUCCESS &&
             InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) &&
             SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE) &&
             SetSecurityDescriptorOwner(&descriptor, user->User.Sid, FALSE) &&

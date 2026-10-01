@@ -780,7 +780,7 @@ TEST(daemon_ipc_windows_private_directory_rejects_untrusted_ancestor_acl) {
     PASS();
 }
 
-/* A private directory is a container, so its owner-only ACE must propagate.
+/* A private directory is a container, so its owner ACE must propagate.
  * Otherwise the protected DACL severs inheritance and every child is created
  * with an empty DACL, unreadable even by its owner. */
 TEST(daemon_ipc_windows_private_directory_ace_is_inheritable) {
@@ -814,11 +814,23 @@ TEST(daemon_ipc_windows_private_directory_ace_is_inheritable) {
             GetAce(dacl, 0, &opaque_ace) && opaque_ace) {
             ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)opaque_ace;
             ace_read = true;
-            /* The owner-only validators require exactly one ACE. An
-             * inheritable ACE built from GENERIC_ALL rather than specific
-             * rights is split by Windows into an effective ACE plus an
-             * INHERIT_ONLY one, which fails that check. */
-            ace_single = information.AceCount == 1;
+            /* The validators accept the owner's ACE plus an optional
+             * LocalSystem ACE (endpoint-security scanners run as SYSTEM),
+             * none of them INHERIT_ONLY. An inheritable ACE built from
+             * GENERIC_ALL rather than specific rights is split by Windows
+             * into an effective ACE plus an INHERIT_ONLY one, which fails
+             * that check. */
+            ace_single = information.AceCount >= 1 && information.AceCount <= 2;
+            for (DWORD i = 0; ace_single && i < information.AceCount; i++) {
+                LPVOID entry = NULL;
+                ace_single = GetAce(dacl, i, &entry) && entry &&
+                             (((ACE_HEADER *)entry)->AceFlags & INHERIT_ONLY_ACE) == 0;
+                if (ace_single) {
+                    PSID entry_sid = (PSID)&((ACCESS_ALLOWED_ACE *)entry)->SidStart;
+                    bool is_system = IsWellKnownSid(entry_sid, WinLocalSystemSid) != 0;
+                    ace_single = i == 0 ? !is_system : is_system;
+                }
+            }
             ace_inheritable = (ace->Header.AceFlags & CONTAINER_INHERIT_ACE) != 0 &&
                               (ace->Header.AceFlags & OBJECT_INHERIT_ACE) != 0;
         }

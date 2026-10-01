@@ -744,6 +744,8 @@ static void *private_win_token_user_query(private_win_security_t *security, HAND
         }                                                                                      \
     } while (0)
 
+static PSID cbm_local_system_sid_pfl(void);
+
 static bool private_win_security_init(private_win_security_t *security) {
     memset(security, 0, sizeof(*security));
     security->advapi = LoadLibraryW(L"advapi32.dll");
@@ -803,18 +805,22 @@ static bool private_win_security_init(private_win_security_t *security) {
     }
     free(token_user);
 
-    DWORD acl_size = (DWORD)(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD));
-    if (sid_length > MAXDWORD - acl_size) {
+    DWORD acl_size = (DWORD)(sizeof(ACL) + 2 * (sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD)));
+    PSID pfl_system_sid = cbm_local_system_sid_pfl();
+    DWORD pfl_system_length = pfl_system_sid ? security->get_length_sid(pfl_system_sid) : 0;
+    if (sid_length > MAXDWORD - acl_size - pfl_system_length) {
         private_win_security_destroy(security);
         return false;
     }
-    acl_size += sid_length;
+    acl_size += sid_length + pfl_system_length;
     security->acl = malloc(acl_size);
     security->descriptor = malloc(SECURITY_DESCRIPTOR_MIN_LENGTH);
     if (!security->acl || !security->descriptor ||
         !security->initialize_acl(security->acl, acl_size, ACL_REVISION) ||
         !security->add_access_allowed_ace(security->acl, ACL_REVISION, FILE_ALL_ACCESS,
                                           security->user_sid) ||
+        (pfl_system_sid && !security->add_access_allowed_ace(security->acl, ACL_REVISION,
+                                                             FILE_ALL_ACCESS, pfl_system_sid)) ||
         !security->initialize_security_descriptor(security->descriptor,
                                                   SECURITY_DESCRIPTOR_REVISION) ||
         !security->set_security_descriptor_dacl(security->descriptor, TRUE, security->acl, FALSE) ||
@@ -889,6 +895,21 @@ static bool private_win_handle_has_local_dos_path(HANDLE handle, wchar_t expecte
     return valid;
 }
 
+/* LocalSystem SID (S-1-5-18). Endpoint-security agents run as SYSTEM and
+ * must be able to open our files to scan them; a DACL without SYSTEM makes
+ * MoveFileEx(REPLACE_EXISTING) fail with ERROR_ACCESS_DENIED on hardened
+ * hosts (CrowdStrike / Check Point / Netskope). SYSTEM is a trusted identity
+ * for every validator here, so granting it changes nothing security-wise. */
+static PSID cbm_local_system_sid_pfl(void) {
+    static unsigned char buffer[SECURITY_MAX_SID_SIZE];
+    static BOOL ready = FALSE;
+    if (!ready) {
+        DWORD size = sizeof(buffer);
+        ready = CreateWellKnownSid(WinLocalSystemSid, NULL, (PSID)buffer, &size);
+    }
+    return ready ? (PSID)buffer : NULL;
+}
+
 static bool private_win_owner_only_dacl(private_win_security_t *security, HANDLE handle) {
     PSID owner = NULL;
     PACL dacl = NULL;
@@ -907,17 +928,30 @@ static bool private_win_owner_only_dacl(private_win_security_t *security, HANDLE
                  (control & SE_DACL_PRESENT) != 0 && (control & SE_DACL_PROTECTED) != 0 &&
                  security->get_acl_information(dacl, &acl_information, sizeof(acl_information),
                                                AclSizeInformation) &&
-                 acl_information.AceCount == 1 && security->get_ace(dacl, 0, &opaque_ace) &&
-                 opaque_ace;
+                 acl_information.AceCount >= 1 && acl_information.AceCount <= 2;
     if (valid) {
-        ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)opaque_ace;
-        PSID ace_sid = (PSID)&ace->SidStart;
-        valid = ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
-                ace->Header.AceSize >= sizeof(ACCESS_ALLOWED_ACE) &&
-                (ace->Header.AceFlags & (INHERITED_ACE | INHERIT_ONLY_ACE)) == 0 &&
-                security->is_valid_sid(ace_sid) &&
-                security->equal_sid(ace_sid, security->user_sid) &&
-                (ace->Mask == FILE_ALL_ACCESS || ace->Mask == GENERIC_ALL);
+        bool user_seen = false;
+        PSID system_sid = cbm_local_system_sid_pfl();
+        for (DWORD i = 0; valid && i < acl_information.AceCount; i++) {
+            opaque_ace = NULL;
+            if (!security->get_ace(dacl, i, &opaque_ace) || !opaque_ace) {
+                valid = false;
+                break;
+            }
+            ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)opaque_ace;
+            PSID ace_sid = (PSID)&ace->SidStart;
+            bool is_user =
+                security->is_valid_sid(ace_sid) && security->equal_sid(ace_sid, security->user_sid);
+            bool is_system = system_sid && security->is_valid_sid(ace_sid) &&
+                             security->equal_sid(ace_sid, system_sid);
+            valid = ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+                    ace->Header.AceSize >= sizeof(ACCESS_ALLOWED_ACE) &&
+                    (ace->Header.AceFlags & (INHERITED_ACE | INHERIT_ONLY_ACE)) == 0 &&
+                    (is_user || is_system) &&
+                    (ace->Mask == FILE_ALL_ACCESS || ace->Mask == GENERIC_ALL);
+            user_seen = user_seen || is_user;
+        }
+        valid = valid && user_seen;
     }
     if (descriptor) {
         (void)LocalFree(descriptor);

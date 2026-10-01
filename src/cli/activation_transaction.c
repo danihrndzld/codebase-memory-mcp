@@ -374,21 +374,44 @@ static bool activation_windows_user(void **information_out, PSID *sid_out) {
     return true;
 }
 
+/* LocalSystem SID (S-1-5-18). Endpoint-security agents run as SYSTEM and
+ * must be able to open our files to scan them; a DACL without SYSTEM makes
+ * MoveFileEx(REPLACE_EXISTING) fail with ERROR_ACCESS_DENIED on hardened
+ * hosts (CrowdStrike / Check Point / Netskope). SYSTEM is a trusted identity
+ * for every validator here, so granting it changes nothing security-wise. */
+static PSID cbm_local_system_sid_act(void) {
+    static unsigned char buffer[SECURITY_MAX_SID_SIZE];
+    static BOOL ready = FALSE;
+    if (!ready) {
+        DWORD size = sizeof(buffer);
+        ready = CreateWellKnownSid(WinLocalSystemSid, NULL, (PSID)buffer, &size);
+    }
+    return ready ? (PSID)buffer : NULL;
+}
+
 static bool activation_windows_security_init(activation_windows_security_t *security) {
     memset(security, 0, sizeof(*security));
     if (!activation_windows_user(&security->token_information, &security->user_sid)) {
         return false;
     }
-    EXPLICIT_ACCESSW access;
-    memset(&access, 0, sizeof(access));
-    access.grfAccessPermissions = GENERIC_ALL;
-    access.grfAccessMode = SET_ACCESS;
-    access.grfInheritance = NO_INHERITANCE;
-    access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-    access.Trustee.TrusteeType = TRUSTEE_IS_USER;
-    access.Trustee.ptstrName = (LPWSTR)security->user_sid;
+    EXPLICIT_ACCESSW access[2];
+    memset(access, 0, sizeof(access));
+    access[0].grfAccessPermissions = GENERIC_ALL;
+    access[0].grfAccessMode = SET_ACCESS;
+    access[0].grfInheritance = NO_INHERITANCE;
+    access[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    access[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+    access[0].Trustee.ptstrName = (LPWSTR)security->user_sid;
+    PSID system_sid = cbm_local_system_sid_act();
+    ULONG entries = 1;
+    if (system_sid) {
+        access[1] = access[0];
+        access[1].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        access[1].Trustee.ptstrName = (LPWSTR)system_sid;
+        entries = 2;
+    }
     bool ok =
-        SetEntriesInAclW(1, &access, NULL, &security->acl) == ERROR_SUCCESS &&
+        SetEntriesInAclW(entries, access, NULL, &security->acl) == ERROR_SUCCESS &&
         InitializeSecurityDescriptor(&security->descriptor, SECURITY_DESCRIPTOR_REVISION) &&
         SetSecurityDescriptorDacl(&security->descriptor, TRUE, security->acl, FALSE) &&
         /* Stamp the owner explicitly to the token user. Without this the file
