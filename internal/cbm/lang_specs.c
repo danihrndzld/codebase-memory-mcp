@@ -2731,6 +2731,11 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
                         plsql_branch_types, empty_types, plsql_assign_types, plsql_throw_types,
                         NULL, empty_types, NULL, NULL, tree_sitter_plsql, NULL},
 
+    // CBM_LANG_RPG — IBM i RPG. No grammar row: fixed-form RPG is column-
+    // positional with two incompatible C-spec layouts (RPG II/III vs RPG IV),
+    // so cbm_extract_file_ex dispatches to the line scanner in extract_rpg.c
+    // before it looks a spec up. Left as a zero spec.
+
 };
 
 _Static_assert(sizeof(lang_specs) / sizeof(lang_specs[0]) == CBM_LANG_COUNT,

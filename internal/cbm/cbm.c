@@ -1622,6 +1622,36 @@ CBMFileResult *cbm_extract_file(const char *source, int source_len, CBMLanguage 
     return r;
 }
 
+/* RPG has no tree-sitter grammar (see extract_rpg.c): the line scanner fills
+ * the result directly and no tree is retained, so the LSP passes and the
+ * parse-coverage flags never see these files. Same bookkeeping as the
+ * tree-sitter path minus the parse. */
+static CBMFileResult *extract_rpg_file(CBMFileResult *result, CBMArena *scratch, const char *source,
+                                       int source_len, const char *project, const char *rel_path) {
+    uint64_t t0 = now_ns();
+    CBMArena *a = &result->arena;
+    result->module_qn = cbm_fqn_module_source_lang(a, project, rel_path, CBM_LANG_RPG);
+    result->is_test_file = cbm_is_test_file(rel_path, CBM_LANG_RPG);
+    CBMExtractCtx ctx = {
+        .arena = a,
+        .scratch = scratch,
+        .result = result,
+        .source = source,
+        .source_len = source_len,
+        .language = CBM_LANG_RPG,
+        .project = project,
+        .rel_path = rel_path,
+        .module_qn = result->module_qn,
+    };
+    cbm_extract_rpg(&ctx);
+    result->imports_count = result->imports.count;
+    result->cached_lang = CBM_LANG_RPG;
+    atomic_fetch_add(&total_extract_ns, now_ns() - t0);
+    atomic_fetch_add(&total_files, 1);
+    cbm_index_mark_done(rel_path);
+    return result;
+}
+
 /* Initial block for the per-file traversal scratch arena, chosen by measuring
  * arena_grow on a 14k-file TypeScript tree: it fires on one file in 12,000 at
  * both this size and at 1 MB, and on most files at 256 KB, where the two
@@ -1667,6 +1697,10 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
 #ifdef CBM_ENABLE_TEST_SEAMS
     cbm_test_fault_inject(rel_path);
 #endif
+
+    if (language == CBM_LANG_RPG) {
+        return extract_rpg_file(result, scratch, source, source_len, project, rel_path);
+    }
 
     // Get language spec
     const CBMLangSpec *spec = cbm_lang_spec(language);

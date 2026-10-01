@@ -249,6 +249,59 @@ static const ext_entry_t EXT_TABLE[] = {
     {".rake", CBM_LANG_RUBY},
     {".rb", CBM_LANG_RUBY},
 
+    /* RPG (IBM i). Source members are exported to git with the extension in
+     * either case (CUSTMNT.RPGLE, custmnt.rpgle), and this table is matched
+     * case-sensitively, so both spellings are listed. .rpgle/.sqlrpgle/
+     * .rpgleinc are RPG IV; .rpg/.rpg36/.rpg38/.sqlrpg/.sqlrpg38 are RPG II/III,
+     * whose calculation specification has different columns (extract_rpg.c). */
+    {".rpg", CBM_LANG_RPG},
+    {".RPG", CBM_LANG_RPG},
+    {".rpg36", CBM_LANG_RPG},
+    {".RPG36", CBM_LANG_RPG},
+    {".rpg38", CBM_LANG_RPG},
+    {".RPG38", CBM_LANG_RPG},
+    {".rpgle", CBM_LANG_RPG},
+    {".RPGLE", CBM_LANG_RPG},
+    {".rpgleinc", CBM_LANG_RPG},
+    {".RPGLEINC", CBM_LANG_RPG},
+    {".sqlrpg", CBM_LANG_RPG},
+    {".SQLRPG", CBM_LANG_RPG},
+    {".sqlrpg38", CBM_LANG_RPG},
+    {".SQLRPG38", CBM_LANG_RPG},
+    {".sqlrpgle", CBM_LANG_RPG},
+    {".SQLRPGLE", CBM_LANG_RPG},
+    /* IBM i CL and DDS members are the same language family: extract_rpg.c
+     * dispatches them to extract_cl.c / extract_dds.c, and the registry then
+     * links CL -> RPG calls and RPG -> DDS file uses as same-language edges.
+     * (.cl is Common Lisp and .cmd is a Windows batch file, so neither is
+     * claimed here.) */
+    {".clp", CBM_LANG_RPG},
+    {".CLP", CBM_LANG_RPG},
+    {".clle", CBM_LANG_RPG},
+    {".CLLE", CBM_LANG_RPG},
+    {".clp38", CBM_LANG_RPG},
+    {".CLP38", CBM_LANG_RPG},
+    {".mnucmd", CBM_LANG_RPG},
+    {".MNUCMD", CBM_LANG_RPG},
+    {".pf", CBM_LANG_RPG},
+    {".PF", CBM_LANG_RPG},
+    {".lf", CBM_LANG_RPG},
+    {".LF", CBM_LANG_RPG},
+    {".dspf", CBM_LANG_RPG},
+    {".DSPF", CBM_LANG_RPG},
+    {".prtf", CBM_LANG_RPG},
+    {".PRTF", CBM_LANG_RPG},
+    {".icff", CBM_LANG_RPG},
+    {".ICFF", CBM_LANG_RPG},
+    {".pf38", CBM_LANG_RPG},
+    {".PF38", CBM_LANG_RPG},
+    {".lf38", CBM_LANG_RPG},
+    {".LF38", CBM_LANG_RPG},
+    {".dspf38", CBM_LANG_RPG},
+    {".DSPF38", CBM_LANG_RPG},
+    {".prtf38", CBM_LANG_RPG},
+    {".PRTF38", CBM_LANG_RPG},
+
     /* Rust */
     {".rs", CBM_LANG_RUST},
 
@@ -891,6 +944,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_OBJECTSCRIPT_EXPORT] = "ObjectScript Export XML",
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
+    [CBM_LANG_RPG] = "RPG",
 
 };
 

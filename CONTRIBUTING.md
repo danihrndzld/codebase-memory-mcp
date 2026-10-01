@@ -100,6 +100,10 @@ Languages like **Dockerfile**, **docker-compose**, **Kubernetes manifests**, and
 - Register the pass in `pipeline.c`.
 - Add tests in `tests/test_pipeline.c` following the `TEST(infra_is_dockerfile)` and `TEST(k8s_extract_manifest)` patterns.
 
+### Languages Without a Grammar (Line-Scanner Pattern)
+
+**RPG** (IBM i) has no tree-sitter grammar: its fixed-form specifications are column-positional and RPG II/III lay out the calculation specification differently from RPG IV. `internal/cbm/extract_rpg.c` scans the source line by line and fills the `CBMFileResult` directly; `cbm_extract_file_ex` dispatches to it before any grammar lookup, and `lang_specs.c` keeps a zero spec for `CBM_LANG_RPG`. The result carries no `cached_tree`, so the LSP and parse-coverage passes skip these files. Tests live in `tests/test_extraction_rpg.c`.
+
 ## Commit Format
 
 Use conventional commits: `type(scope): description`

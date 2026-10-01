@@ -177,6 +177,7 @@ typedef enum {
     CBM_LANG_ARKTS,    // ArkTS (HarmonyOS/OpenHarmony .ets — TypeScript superset + ArkUI)
     CBM_LANG_PLSQL,    // Oracle PL/SQL
     CBM_LANG_CHIALISP, // Chialisp (.clsp/.clib/.clinc — Chia smart-coin s-expression language)
+    CBM_LANG_RPG,      // IBM i RPG (RPG II/III/IV, fixed and free-form). No grammar: extract_rpg.c
     CBM_LANG_COUNT
 } CBMLanguage;
 
@@ -848,6 +849,19 @@ void cbm_extract_unified(CBMExtractCtx *ctx);
 
 // K8s / Kustomize semantic extractor (called when language is CBM_LANG_K8S or CBM_LANG_KUSTOMIZE).
 void cbm_extract_k8s(CBMExtractCtx *ctx);
+
+// IBM i RPG line scanner (CBM_LANG_RPG). Runs instead of the tree-sitter
+// passes: ctx->root is unused and the result retains no tree. Defined in
+// extract_rpg.c. CL and DDS members share CBM_LANG_RPG (so calls and file
+// uses between them are never cross-language guesses) and are dispatched by
+// extension to the scanners below.
+void cbm_extract_rpg(CBMExtractCtx *ctx);
+// IBM i CL line scanner (.clp .clle .mnucmd): extract_cl.c.
+void cbm_extract_cl(CBMExtractCtx *ctx);
+bool cbm_ibmi_is_cl(const char *basename);
+// IBM i DDS line scanner (.pf .lf .dspf .prtf .icff and their *38 forms): extract_dds.c.
+void cbm_extract_dds(CBMExtractCtx *ctx);
+bool cbm_ibmi_is_dds(const char *basename);
 
 // --- Label predicates ---
 
