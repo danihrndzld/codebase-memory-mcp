@@ -334,6 +334,15 @@ TEST(lang_ext_ibmi_cl_dds) {
     ASSERT_NEQ(cbm_language_for_extension(".cmd"), CBM_LANG_RPG);
     PASS();
 }
+/* VB.NET source in both extension cases; .vbproj stays XML. */
+TEST(lang_ext_vbnet) {
+    ASSERT_EQ(cbm_language_for_extension(".vb"), CBM_LANG_VBNET);
+    ASSERT_EQ(cbm_language_for_extension(".VB"), CBM_LANG_VBNET);
+    ASSERT_EQ(cbm_language_for_filename("SesionController.vb"), CBM_LANG_VBNET);
+    ASSERT_EQ(cbm_language_for_extension(".vbproj"), CBM_LANG_XML);
+    ASSERT_STR_EQ(cbm_language_name(CBM_LANG_VBNET), "VB.NET");
+    PASS();
+}
 TEST(lang_ext_verilog) {
     ASSERT_EQ(cbm_language_for_extension(".v"), CBM_LANG_VERILOG);
     PASS();
@@ -1772,6 +1781,7 @@ SUITE(language) {
     RUN_TEST(lang_ext_cbl);
     RUN_TEST(lang_ext_rpgle);
     RUN_TEST(lang_ext_rpg3);
+    RUN_TEST(lang_ext_vbnet);
     RUN_TEST(lang_ext_ibmi_cl_dds);
     RUN_TEST(lang_ext_verilog);
     RUN_TEST(lang_ext_sv);

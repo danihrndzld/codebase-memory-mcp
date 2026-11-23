@@ -151,6 +151,10 @@ struct cbm_registry {
     CBMHashTable *swift_signatures; /* borrowed exact-map keys; owned values */
     CBMHashTable *swift_overloads;  /* base callable QN -> overloads */
     swift_owners_t *swift_owners;
+    /* VB.NET names are case-insensitive: lowercased simple name -> the
+     * spelling a VB.NET definition registered (first one wins). NULL until a
+     * VB.NET definition arrives. Owned keys and values. */
+    CBMHashTable *vb_lower;
 };
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
@@ -1680,9 +1684,78 @@ static void swift_owners_free(swift_owners_t *index) {
     cbm_free(CBM_MEM_CLASS_OTHER, index);
 }
 
+static void free_vb_lower(const char *key, void *value, void *ud) {
+    (void)ud;
+    free((void *)key);
+    free(value);
+}
+
+static void ascii_lower_into(const char *s, size_t n, char *out) {
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (char)tolower((unsigned char)s[i]);
+    }
+    out[n] = '\0';
+}
+
+/* Remember how a VB.NET definition spells its simple name. */
+static void vb_index_name(cbm_registry_t *r, const char *name) {
+    if (!r->vb_lower) {
+        r->vb_lower = cbm_ht_create(CBM_SZ_512);
+    }
+    size_t n = name ? strlen(name) : 0;
+    if (!r->vb_lower || n == 0) {
+        return;
+    }
+    char *key = malloc(n + 1);
+    if (!key) {
+        return;
+    }
+    ascii_lower_into(name, n, key);
+    if (cbm_ht_get(r->vb_lower, key)) {
+        free(key);
+        return;
+    }
+    char *val = strdup(name);
+    if (val) {
+        cbm_ht_set(r->vb_lower, key, val);
+    } else {
+        free(key);
+    }
+}
+
+/* `x.registrar` -> `x.Registrar`: the member a VB.NET call names, when no
+ * definition spells it exactly, takes the spelling of a VB.NET definition with
+ * the same lowercased name. Only the last segment changes: a receiver is often
+ * a local that shares its type's name (`Dim login As New Login`), and turning
+ * it into the type would change what the resolver reads as a qualifier.
+ * Returns `callee` itself when nothing changed or it does not fit `out`. */
+static const char *vb_canonical_callee(const cbm_registry_t *r, const char *callee, char *out,
+                                       size_t cap) {
+    const char *member = simple_name(callee);
+    size_t len = strlen(callee);
+    size_t mlen = strlen(member);
+    if (!r->vb_lower || len >= cap || mlen >= CBM_SZ_256 || cbm_ht_get(r->by_name, member)) {
+        return callee;
+    }
+    char low[CBM_SZ_256];
+    ascii_lower_into(member, mlen, low);
+    const char *canon = cbm_ht_get(r->vb_lower, low);
+    if (!canon || strlen(canon) != mlen) {
+        return callee;
+    }
+    size_t prefix = (size_t)(member - callee);
+    memcpy(out, callee, prefix);
+    memcpy(out + prefix, canon, mlen + 1);
+    return out;
+}
+
 void cbm_registry_free(cbm_registry_t *r) {
     if (!r) {
         return;
+    }
+    if (r->vb_lower) {
+        cbm_ht_foreach(r->vb_lower, free_vb_lower, NULL);
+        cbm_ht_free(r->vb_lower);
     }
     /* by_name first: its items borrow exact's keys. */
     cbm_ht_foreach(r->by_name, free_qn_array, NULL);
@@ -1875,6 +1948,9 @@ void cbm_registry_add_lang_in_module(cbm_registry_t *r, const char *name,
     const char *owned_qn = registry_add_exact(r, qualified_name, label);
     if (!owned_qn) {
         return;
+    }
+    if (lang == CBM_LANG_VBNET) {
+        vb_index_name(r, name && name[0] ? name : simple_name(qualified_name));
     }
 
     /* Index the symbol under the QN's last dot segment, and additionally under
@@ -5303,6 +5379,10 @@ cbm_resolution_t cbm_registry_resolve_call_scoped(const cbm_registry_t *r, const
                                                   const char **import_map_vals,
                                                   int import_map_count, CBMLanguage lang,
                                                   const char *scope_qn, bool caller_test) {
+    char vb_buf[CBM_SZ_512];
+    if (lang == CBM_LANG_VBNET && callee_name) {
+        callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
+    }
     if (lang == CBM_LANG_PYTHON) {
         cbm_resolution_t lexical =
             cbm_registry_resolve_lexical(r, callee_name, scope_qn, module_qn);

@@ -216,6 +216,7 @@ typedef enum {
     CBM_LANG_DIAGRAM,  // diagram files (PlantUML, DOT, D2, draw.io, Excalidraw), read
                        // without a grammar (diagram.c)
     CBM_LANG_RPG,      // IBM i RPG (RPG II/III/IV, fixed and free-form). No grammar: extract_rpg.c
+    CBM_LANG_VBNET,    // VB.NET (.vb), vendored tree-sitter-vbnet grammar
     CBM_LANG_COUNT
 } CBMLanguage;
 

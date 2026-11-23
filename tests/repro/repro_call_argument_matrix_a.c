@@ -1180,6 +1180,28 @@ SEMANTIC_CASE(ada, ADA, "main.adb",
               "end Sample;\n",
               "handler", "function_call", 2, 2);
 
+/* VB.NET: both calls take an argument, so both are array_access_expression
+ * nodes (call and index share one syntax; see vbnet_callee). */
+SEMANTIC_CASE(vbnet, VBNET, "Sample.vb",
+              "Class Sample\n"
+              "    Shared Function handler(value As Integer) As Integer\n"
+              "        Return value\n"
+              "    End Function\n"
+              "    Shared Function accept(value As Integer) As Integer\n"
+              "        Return value\n"
+              "    End Function\n"
+              "    Shared Function argument(handler As Integer) As Integer\n"
+              "        Return accept(handler)\n"
+              "    End Function\n"
+              "    Shared Function direct() As Integer\n"
+              "        Return handler(0)\n"
+              "    End Function\n"
+              "    Shared Function bare(handler As Integer) As Integer\n"
+              "        Return handler\n"
+              "    End Function\n"
+              "End Class\n",
+              "handler", "array_access_expression", 2, 2);
+
 SEMANTIC_CASE(agda, AGDA, "Main.agda",
               "module Main where\n"
               "open import Agda.Builtin.Nat\n"
@@ -1258,7 +1280,8 @@ SEMANTIC_CASE(agda, AGDA, "Main.agda",
     X(tcl)                \
     X(ada)                \
     X(agda)               \
-    X(arkts)
+    X(arkts)              \
+    X(vbnet)
 
 #define DEFINE_MATRIX_TEST(tag_)                        \
     TEST(repro_call_argument_matrix_a_##tag_) {         \
@@ -1273,8 +1296,8 @@ MATRIX_A_CASES(DEFINE_MATRIX_TEST)
 static const MatrixCase *const MATRIX_A_CASE_ROWS[] = {MATRIX_A_CASES(MATRIX_CASE_POINTER)};
 #undef MATRIX_CASE_POINTER
 
-_Static_assert(sizeof(MATRIX_A_CASE_ROWS) / sizeof(MATRIX_A_CASE_ROWS[0]) == 68,
-               "GO..ARKTS call-capable matrix must contain exactly 68 language rows");
+_Static_assert(sizeof(MATRIX_A_CASE_ROWS) / sizeof(MATRIX_A_CASE_ROWS[0]) == 69,
+               "GO..ARKTS + VBNET call-capable matrix must contain exactly 69 language rows");
 
 size_t repro_call_argument_matrix_a_copy_language_ids(CBMLanguage *language_ids, size_t capacity) {
     size_t row_count = sizeof(MATRIX_A_CASE_ROWS) / sizeof(MATRIX_A_CASE_ROWS[0]);

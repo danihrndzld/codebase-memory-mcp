@@ -64,6 +64,11 @@ static const ext_entry_t EXT_TABLE[] = {
      * markup lands in ERROR regions and is reported via parse_partial. */
     {".cshtml", CBM_LANG_CSHARP},
 
+    /* VB.NET. Visual Studio writes .vb, but files copied from older tooling
+     * can carry .VB, and this table is matched case-sensitively. */
+    {".vb", CBM_LANG_VBNET},
+    {".VB", CBM_LANG_VBNET},
+
     /* Clojure */
     {".clj", CBM_LANG_CLOJURE},
     {".cljc", CBM_LANG_CLOJURE},
@@ -1002,6 +1007,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
     [CBM_LANG_RPG] = "RPG",
+    [CBM_LANG_VBNET] = "VB.NET",
 
 };
 
