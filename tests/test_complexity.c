@@ -1380,7 +1380,7 @@ TEST(complexity_rescript_error_recovery_lexing_is_linear) {
 }
 
 /* ── Attribute lines in the VB.NET XML-literal scanner ───────────────────
- * The vendored vbnet grammar (not yet routed to any file) lexes a whole VB
+ * The vendored vbnet grammar (CBM_LANG_VBNET, .vb files) lexes a whole VB
  * XML literal as one external token, and its scanner is offered a '<' where a
  * declaration or member starts. In valid VB that '<' opens an attribute block
  * (`<Serializable()> _`), never an XML literal, but the scanner read

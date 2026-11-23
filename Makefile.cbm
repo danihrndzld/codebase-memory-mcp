@@ -798,6 +798,7 @@ TEST_EXTRACTION_SRCS = \
     tests/test_test_conventions.c \
     tests/test_extraction_inheritance.c \
     tests/test_extraction_imports.c \
+    tests/test_extraction_vbnet.c \
     tests/test_parse_coverage.c \
     tests/test_grammar_regression.c \
     tests/test_grammar_labels.c \

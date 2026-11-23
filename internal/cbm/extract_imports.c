@@ -42,6 +42,7 @@ static void parse_wolfram_imports(CBMExtractCtx *ctx);
 static void parse_php_imports(CBMExtractCtx *ctx);
 static void parse_csharp_imports(CBMExtractCtx *ctx);
 static void parse_spec_imports(CBMExtractCtx *ctx);
+static void parse_vbnet_imports(CBMExtractCtx *ctx);
 static void parse_hare_imports(CBMExtractCtx *ctx);
 static void parse_pascal_imports(CBMExtractCtx *ctx);
 static void parse_powershell_imports(CBMExtractCtx *ctx);
@@ -2991,6 +2992,30 @@ static void parse_csharp_imports(CBMExtractCtx *ctx) {
     ts_tree_cursor_delete(&cursor);
 }
 
+/* VB.NET `Imports A.B` / `Imports F = A.B`: the `namespace` field is the
+ * target and `alias` the local name. XML namespace imports have neither. */
+static void parse_vbnet_imports(CBMExtractCtx *ctx) {
+    CBMArena *a = ctx->arena;
+    uint32_t nc = ts_node_named_child_count(ctx->root);
+    for (uint32_t i = 0; i < nc; i++) {
+        TSNode node = ts_node_named_child(ctx->root, i);
+        if (strcmp(ts_node_type(node), "imports_statement") != 0) {
+            continue;
+        }
+        TSNode ns = ts_node_child_by_field_name(node, TS_FIELD("namespace"));
+        char *path = ts_node_is_null(ns) ? NULL : cbm_node_text(a, ns, ctx->source);
+        if (!path || !path[0]) {
+            continue;
+        }
+        TSNode alias = ts_node_child_by_field_name(node, TS_FIELD("alias"));
+        const char *local =
+            ts_node_is_null(alias) ? path_last(a, path) : cbm_node_text(a, alias, ctx->source);
+        CBMImport imp = {
+            .local_name = local, .module_path = path, .start_byte = ts_node_start_byte(node)};
+        cbm_imports_push(&ctx->result->imports, a, imp);
+    }
+}
+
 // --- Generic spec-driven imports ---
 // For grammar-only languages that have no dedicated parser above, consume the
 // `import_node_types` declared in the language's CBMLangSpec.  Each root-level
@@ -4706,6 +4731,9 @@ void cbm_extract_imports(CBMExtractCtx *ctx) {
         break;
     case CBM_LANG_CSHARP:
         parse_csharp_imports(ctx);
+        break;
+    case CBM_LANG_VBNET:
+        parse_vbnet_imports(ctx);
         break;
     case CBM_LANG_RUST:
         parse_rust_imports(ctx);

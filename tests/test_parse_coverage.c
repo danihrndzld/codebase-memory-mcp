@@ -2111,8 +2111,9 @@ TEST(pascal_broken_source_still_flagged_issue2211) {
 
 /* ── VB.NET: the vendored grammar parses real VB.NET (#1178, #1179) ────────
  * tools/tree-sitter-vbnet (tree-sitter-vbnet + CodeGraph's real-world patch)
- * is vendored ahead of VB.NET extraction: no CBMLanguage routes to it yet, so
- * these cases parse through tree_sitter_vbnet() directly. The sample is the
+ * backs CBM_LANG_VBNET (.vb); these cases parse through tree_sitter_vbnet()
+ * directly to check the grammar alone (tests/test_extraction_vbnet.c covers
+ * extraction). The sample is the
  * shape extraction must index -- Imports, a WinForms Designer partial class,
  * Handles, Namespace, Inherits/Implements, MustOverride, #Region, Sub New,
  * Property, Function -- plus names that begin with a keyword. It is RED on the

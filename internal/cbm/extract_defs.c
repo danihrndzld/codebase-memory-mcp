@@ -3830,6 +3830,9 @@ static const char *aspnet_attr_arg(CBMArena *a, TSNode attr, const char *source,
     uint32_t nc = ts_node_named_child_count(args);
     for (uint32_t i = 0; i < nc; i++) {
         TSNode arg = ts_node_named_child(args, i);
+        if (!key && strcmp(ts_node_type(arg), "string_literal") == 0) {
+            return aspnet_string_value(a, arg, source); /* VB.NET: no argument wrapper */
+        }
         uint32_t vc = ts_node_named_child_count(arg);
         if (strcmp(ts_node_type(arg), "attribute_argument") != 0 || vc == 0) {
             continue;
@@ -4120,6 +4123,7 @@ static int find_jvm_modifiers(TSNode node, CBMLanguage lang, TSNode *out, int ma
         wrapper = "modifiers";
         break;
     case CBM_LANG_CSHARP:
+    case CBM_LANG_VBNET:
     case CBM_LANG_PHP:
         wrapper = "attribute_list";
         break;
@@ -4764,6 +4768,41 @@ static const char **extract_base_classes(CBMArena *a, TSNode node, const char *s
             }
         }
         return NULL;
+    }
+    // VB.NET: `Inherits A` and `Implements I, J` are statements in the type
+    // body, each listing its types as named children.
+    if (lang == CBM_LANG_VBNET) {
+        const char *bases[MAX_BASES];
+        int base_count = 0;
+        uint32_t nc = ts_node_named_child_count(node);
+        for (uint32_t i = 0; i < nc; i++) {
+            TSNode st = ts_node_named_child(node, i);
+            const char *sk = ts_node_type(st);
+            if (strcmp(sk, "inherits_statement") != 0 && strcmp(sk, "implements_statement") != 0) {
+                continue;
+            }
+            uint32_t tc = ts_node_named_child_count(st);
+            for (uint32_t j = 0; j < tc && base_count < MAX_BASES_MINUS_1; j++) {
+                char *base = cbm_node_text(a, ts_node_named_child(st, j), source);
+                char *paren = base ? strchr(base, '(') : NULL; /* IComparable(Of T) */
+                if (paren) {
+                    *paren = '\0';
+                }
+                if (base && base[0]) {
+                    bases[base_count++] = base;
+                }
+            }
+        }
+        if (base_count == 0) {
+            return NULL;
+        }
+        const char **result =
+            (const char **)cbm_arena_alloc(a, (base_count + 1) * sizeof(const char *));
+        if (result) {
+            memcpy(result, bases, base_count * sizeof(const char *));
+            result[base_count] = NULL;
+        }
+        return result;
     }
     // Languages whose heritage is not exposed via a tree-sitter field need
     // dedicated walkers; the generic field/keyword path mis-captures them.
@@ -10087,6 +10126,11 @@ static void drop_c_typedefs_shadowed_by_tags(CBMExtractCtx *ctx, int first) {
 
 // Find the body/members node inside a class node
 static TSNode find_class_body(TSNode class_node, CBMLanguage lang) {
+    // VB.NET: members are direct children of the type, each tagged with the
+    // repeated `body` field, which by name only returns the first member.
+    if (lang == CBM_LANG_VBNET) {
+        return class_node;
+    }
     // Try field names first
     static const char *body_fields[] = {"body", "members", "class_body", "declaration_list", NULL};
     for (const char **f = body_fields; *f; f++) {
@@ -10314,11 +10358,20 @@ static TSNode resolve_method_name(TSNode child, CBMLanguage lang) {
 }
 
 // Push a single method definition
+static void push_method_def_named(CBMExtractCtx *ctx, TSNode child, TSNode class_node,
+                                  const char *class_qn, const CBMLangSpec *spec, char *name);
+
 static void push_method_def(CBMExtractCtx *ctx, TSNode child, TSNode class_node,
                             const char *class_qn, const CBMLangSpec *spec, TSNode name_node) {
+    push_method_def_named(
+        ctx, child, class_node, class_qn, spec,
+        cbm_func_name_node_text(ctx->arena, name_node, ctx->source, ctx->language));
+}
+
+static void push_method_def_named(CBMExtractCtx *ctx, TSNode child, TSNode class_node,
+                                  const char *class_qn, const CBMLangSpec *spec, char *name) {
     CBMArena *a = ctx->arena;
 
-    char *name = cbm_func_name_node_text(a, name_node, ctx->source, ctx->language);
     if (!name || !name[0]) {
         return;
     }
@@ -10427,7 +10480,7 @@ static void push_method_def(CBMExtractCtx *ctx, TSNode child, TSNode class_node,
         def.route_path = prefix ? join_route_paths(a, prefix, def.route_path) : NULL;
         def.route_method = prefix ? def.route_method : NULL;
     }
-    if (ctx->language == CBM_LANG_CSHARP) {
+    if (ctx->language == CBM_LANG_CSHARP || ctx->language == CBM_LANG_VBNET) {
         aspnet_action_route(a, child, class_node, name, ctx->source, &def.route_path,
                             &def.route_method);
     }
@@ -10700,6 +10753,15 @@ static void extract_class_methods(CBMExtractCtx *ctx, TSNode class_node, const c
             if (!ts_node_is_null(constructor_name)) {
                 push_method_def(ctx, method_node, class_node, class_qn, spec, constructor_name);
             }
+            continue;
+        }
+
+        /* VB.NET `Sub New` has no name node: the grammar keeps the keywords
+         * out of the tree. Name it New, as VB.NET source calls it. */
+        if (ctx->language == CBM_LANG_VBNET &&
+            strcmp(ts_node_type(method_node), "constructor_declaration") == 0) {
+            push_method_def_named(ctx, method_node, class_node, class_qn, spec,
+                                  cbm_arena_strdup(ctx->arena, "New"));
             continue;
         }
 

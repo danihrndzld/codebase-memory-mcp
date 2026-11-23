@@ -404,6 +404,57 @@ static char *extract_fp_callee(CBMArena *a, TSNode node, const char *source, con
     return NULL;
 }
 
+/* VB.NET callee text. `f(x)` and `a(0)` share one syntax, so the grammar
+ * parses every call with arguments as array_access_expression (`array` field)
+ * and `New T(a, b)` as array_creation_expression; an index read of a local
+ * array also lands here and stays unresolved. A call_statement is only a call
+ * site of its own for `Call Name` without parentheses; with parentheses its
+ * child is already a call node. `Me.`/`MyBase.`/`MyClass.` receivers drop to
+ * the member name, and a receiver that is itself a call (`a.B(1).C()`) keeps
+ * only the member. */
+static char *vbnet_callee(CBMArena *a, TSNode node, const char *source) {
+    const char *kind = ts_node_type(node);
+    TSNode target = {0};
+    if (strcmp(kind, "invocation_expression") == 0) {
+        target = ts_node_child_by_field_name(node, TS_FIELD("function"));
+    } else if (strcmp(kind, "array_access_expression") == 0) {
+        target = ts_node_child_by_field_name(node, TS_FIELD("array"));
+    } else if (strcmp(kind, "call_statement") == 0) {
+        target = ts_node_named_child_count(node) > 0 ? ts_node_named_child(node, 0) : target;
+    } else if (strcmp(kind, "object_creation_expression") == 0 ||
+               strcmp(kind, "array_creation_expression") == 0) {
+        target = ts_node_child_by_field_name(node, TS_FIELD("type"));
+        if (!ts_node_is_null(target) && strcmp(ts_node_type(target), "array_type") == 0) {
+            target = ts_node_child_by_field_name(target, TS_FIELD("element_type"));
+        }
+        if (!ts_node_is_null(target) && strcmp(ts_node_type(target), "generic_name") == 0 &&
+            ts_node_named_child_count(target) > 0) {
+            target = ts_node_named_child(target, 0);
+        }
+    }
+    if (ts_node_is_null(target)) {
+        return NULL;
+    }
+    const char *tk = ts_node_type(target);
+    if (strcmp(tk, "member_access_expression") == 0) {
+        TSNode obj = ts_node_child_by_field_name(target, TS_FIELD("object"));
+        TSNode member = ts_node_child_by_field_name(target, TS_FIELD("member"));
+        const char *ok = ts_node_is_null(obj) ? "" : ts_node_type(obj);
+        bool plain = strcmp(ok, "identifier") == 0 || strcmp(ok, "member_access_expression") == 0 ||
+                     strcmp(ok, "simple_name") == 0 || strcmp(ok, "qualified_name") == 0;
+        char *text = plain ? cbm_node_text(a, target, source) : NULL;
+        if (text && !strchr(text, '(')) {
+            return text;
+        }
+        return ts_node_is_null(member) ? NULL : cbm_node_text(a, member, source);
+    }
+    if (strcmp(tk, "identifier") == 0 || strcmp(tk, "simple_name") == 0 ||
+        strcmp(tk, "qualified_name") == 0) {
+        return cbm_node_text(a, target, source);
+    }
+    return NULL;
+}
+
 // Wolfram: extract callee from apply, skipping LHS of set definitions.
 static char *extract_wolfram_callee(CBMArena *a, TSNode node, const char *source) {
     TSNode parent = ts_node_parent(node);
@@ -2563,6 +2614,12 @@ static char *extract_callee_name(CBMArena *a, TSNode node, const char *source, C
      * generic fallback would happily emit). NULL here means "not a call". */
     if (lang == CBM_LANG_PKL) {
         return extract_pkl_callee(a, node, source, ts_node_type(node));
+    }
+
+    /* VB.NET: resolved here and returned unconditionally, since
+     * array_access_expression is also a plain index read (see vbnet_callee). */
+    if (lang == CBM_LANG_VBNET) {
+        return vbnet_callee(a, node, source);
     }
 
     // Helm / Go templates: resolve `include "x"` / `template "x"` to the
